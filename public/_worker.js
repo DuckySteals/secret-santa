@@ -1,6 +1,7 @@
 import { preview } from '../src/preview.js';
 import { amazon } from '../src/shop.js';
 import { auth } from '../src/auth.js';
+import { log, dev } from '../src/dev.js';
 // Secret Santa: organizers create a group, the worker draws names, and each
 // person opens a private link to see who they're buying for.
 const MAX_PEOPLE = 100;
@@ -70,7 +71,7 @@ const pub = p => ({ name: p.name, viewer: !!p.viewer, items: items(p) });
 
 const info = g => ({ name: g.name, budget: g.budget, date: g.date, note: g.note, count: g.people.filter(p => !p.viewer).length, viewers: g.people.filter(p => p.viewer).length });
 
-async function api(req, env, path) {
+async function api(req, env, path, track) {
   const body = req.method === 'GET' ? {} : await req.json().catch(() => ({}));
   const gid = req.headers.get('x-group');
   const key = req.headers.get('x-key') || '';
@@ -90,10 +91,17 @@ async function api(req, env, path) {
     const err = redraw(g);
     if (err) return fail(err);
     await save(env, g);
+    track('event', 'group created', `${people.length} people, ${exclude.length} no-match pairs`);
     return json({ id: g.id, admin: g.admin });
   }
 
-  if (path.startsWith('/api/auth/')) return auth(req, env, path, body, async (id, kind, k) => {
+  if (path === '/api/log' && req.method === 'POST') {
+    // Errors reported by people's browsers.
+    track('client', clip(body.msg, 500), `${clip(body.page, 20)}\n${clip(body.ua, 200)}\n${clip(body.detail, 3000)}`);
+    return json({ ok: true });
+  }
+  if (path.startsWith('/api/dev/')) return dev(req, env, path, body, json);
+  if (path.startsWith('/api/auth/')) return auth(req, env, path, body, track, async (id, kind, k) => {
     const grp = await load(env, id);
     if (!grp) return null;
     if (kind === 'admin') return grp.admin === k ? grp.name : null;
@@ -180,7 +188,9 @@ async function api(req, env, path) {
 
   if (path === '/api/me/shop') {
     const q = clip(new URL(req.url).searchParams.get('q'), 100);
-    return json({ results: q ? await amazon(q).catch(() => []) : [] });
+    const results = q ? await amazon(q).catch(e => (track('error', 'amazon search failed', e.stack), [])) : [];
+    if (q && !results.length) track('warn', 'amazon search empty', 'Amazon sent no results (often its bot check)');
+    return json({ results });
   }
   if (path === '/api/me/item' && req.method === 'POST') {
     let url = clip(body.u, 1000);
@@ -192,6 +202,9 @@ async function api(req, env, path) {
     // Picked from the Amazon search: picture and price came with it.
     const picked = /^https:\/\/m\.media-amazon\.com\/images\//.test(body.img || '') && clip(body.t) && { img: body.img, price: clip(body.price, 20) };
     const p = picked || (url ? await preview(url, env) : {});
+    const host = url && new URL(url).hostname.replace(/^www\./, '');
+    const how = picked ? 'from Amazon search' : photo ? 'own photo' : p.img ? 'picture found' : url ? 'no picture found' : 'no link';
+    track(url && !photo && !p.img ? 'warn' : 'event', url && !photo && !p.img ? 'link without picture' : 'item added', `${host || ''} · ${how}`);
     me.items.push({ id: rand(4), t: clip(body.t, 120) || p.title || new URL(url).hostname.replace(/^www\./, ''), u: url, img: photo || p.img, price: clip(body.price, 20) || p.price, n: clip(body.n, 300) });
   } else if (path === '/api/me/item/photo' && req.method === 'POST') {
     const item = items(me).find(i => i.id === body.id);
@@ -209,6 +222,7 @@ async function api(req, env, path) {
     // A thread is keyed by the Santa's id: s=1 from the Santa, s=0 from the giftee.
     const [thread, s] = body.to === 'giftee' ? [me.id, 1] : [santaId, 0];
     (g.msgs[thread] ||= []).push({ s, x: text, t: Date.now() });
+    track('event', 'message sent', '');
     if (g.msgs[thread].length > 200) g.msgs[thread].shift();
   } else if (req.method !== 'GET') return fail('Not found', 404);
   if (req.method === 'POST' || !me.seen) {
@@ -227,10 +241,13 @@ async function api(req, env, path) {
 }
 
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     const path = new URL(req.url).pathname;
     if (path.startsWith('/api/')) {
-      try { return await api(req, env, path); } catch (e) { return fail('Something went wrong.', 500); }
+      // Logging runs after the response is sent, so it never slows anyone down.
+      const track = (kind, msg, detail) => ctx.waitUntil(log(env, kind, msg, detail, `${req.method} ${path}`));
+      try { return await api(req, env, path, track); }
+      catch (e) { track('error', e.message, e.stack); return fail('Something went wrong.', 500); }
     }
     return env.ASSETS.fetch(req);
   },

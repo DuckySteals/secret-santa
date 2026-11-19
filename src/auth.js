@@ -1,3 +1,5 @@
+import { sendMail } from './mail.js';
+
 // Email + password accounts. An account remembers the private links you've opened,
 // so you can log in on any device and find your groups again.
 const enc = new TextEncoder();
@@ -30,7 +32,7 @@ async function startSession(env, uid, email) {
 }
 
 // check(gid, kind, key) -> display name if the link is real, else null.
-export async function auth(req, env, path, body, check) {
+export async function auth(req, env, path, body, track, check) {
   const email = String(body.email || '').trim().toLowerCase().slice(0, 120);
   const pw = String(body.password || '');
   if (path === '/api/auth/signup') {
@@ -40,12 +42,45 @@ export async function auth(req, env, path, body, check) {
       return reply({ error: 'That email already has an account. Log in instead.' }, 400);
     const id = token(), salt = token();
     await env.DB.prepare('INSERT INTO users (id, email, salt, pw, created) VALUES (?, ?, ?, ?, ?)').bind(id, email, salt, await hash(pw, salt), Date.now()).run();
+    track('event', 'account created', '');
     return startSession(env, id, email);
   }
   if (path === '/api/auth/login') {
     const u = await env.DB.prepare('SELECT id, salt, pw FROM users WHERE email = ?').bind(email).first();
-    if (!u || !same(await hash(pw, u.salt), u.pw)) return reply({ error: 'Wrong email or password.' }, 401);
+    if (!u || !same(await hash(pw, u.salt), u.pw)) { track('warn', 'failed login', ''); return reply({ error: 'Wrong email or password.' }, 401); }
     return startSession(env, u.id, email);
+  }
+  if (path === '/api/auth/forgot') {
+    if (!env.SMTP_USER) return reply({ error: "Password reset emails aren't set up yet." }, 503);
+    const u = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
+    // Same answer either way, so nobody can test which emails have accounts. One email a minute at most.
+    const recent = u && await env.DB.prepare('SELECT 1 FROM resets WHERE uid = ? AND created > ?').bind(u.id, Date.now() - 60000).first();
+    if (u && !recent) {
+      const t = token();
+      await env.DB.prepare('INSERT INTO resets (token, uid, created) VALUES (?, ?, ?)').bind(await sha(t), u.id, Date.now()).run();
+      const link = `${new URL(req.url).origin}/#reset/${t}`;
+      try {
+        await sendMail(env, email, 'Reset your Secret Santa password',
+          `Someone asked to reset the password for this email on Secret Santa.\n\nOpen this link within an hour to choose a new password:\n${link}\n\nIf it wasn't you, ignore this email. Your password stays the same.`);
+        track('event', 'reset email sent', '');
+      } catch (e) { track('error', 'reset email failed', e.message); return reply({ error: "Couldn't send the email. Try again in a minute." }, 502); }
+    }
+    return reply({ ok: true });
+  }
+  if (path === '/api/auth/reset') {
+    const row = await env.DB.prepare('SELECT uid FROM resets WHERE token = ? AND created > ?').bind(await sha(String(body.token || '')), Date.now() - 3600000).first();
+    if (!row) return reply({ error: 'This reset link has expired. Ask for a new one.' }, 400);
+    if (pw.length < 8) return reply({ error: 'Use a password of at least 8 characters.' }, 400);
+    const salt = token();
+    const u = await env.DB.prepare('SELECT email FROM users WHERE id = ?').bind(row.uid).first();
+    // New password, every old login signed out, and the link can't be used again.
+    await env.DB.batch([
+      env.DB.prepare('UPDATE users SET salt = ?, pw = ? WHERE id = ?').bind(salt, await hash(pw, salt), row.uid),
+      env.DB.prepare('DELETE FROM sessions WHERE uid = ?').bind(row.uid),
+      env.DB.prepare('DELETE FROM resets WHERE uid = ?').bind(row.uid),
+    ]);
+    track('event', 'password reset', '');
+    return startSession(env, row.uid, u.email);
   }
   if (path === '/api/auth/logout') {
     const sid = sidOf(req);

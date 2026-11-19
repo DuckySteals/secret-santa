@@ -3,6 +3,16 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const linkify = s => esc(s).replace(/https?:\/\/[^\s<]+/g, u => `<a href="${u}" target="_blank" rel="noopener">${u}</a>`);
 const $ = sel => app.querySelector(sel);
 
+// Send browser errors to the developer log (page name only, never private links). Five per visit at most.
+let reported = 0;
+function report(msg, detail) {
+  if (reported++ >= 5) return;
+  const body = JSON.stringify({ msg: String(msg), detail: String(detail || ''), page: location.hash.split('/')[0] || '#home', ua: navigator.userAgent });
+  navigator.sendBeacon?.('/api/log', body) || fetch('/api/log', { method: 'POST', body, keepalive: true }).catch(() => {});
+}
+addEventListener('error', e => report(e.message, `${e.filename}:${e.lineno}:${e.colno}\n${e.error?.stack || ''}`));
+addEventListener('unhandledrejection', e => report(e.reason?.message || e.reason, e.reason?.stack));
+
 function toast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg;
@@ -545,6 +555,7 @@ function accountPage(mode = 'login') {
     $('#out').onclick = async () => { account = await call('/api/auth/logout', { body: {} }); account.links = []; showAccount(); location.hash = ''; };
     return;
   }
+  if (mode === 'forgot') return forgotPage();
   const signup = mode === 'signup';
   app.innerHTML = `
     <div class="card">
@@ -556,7 +567,7 @@ function accountPage(mode = 'login') {
         <p class="err" id="err"></p>
         <button class="big" style="margin-top:4px">${signup ? 'Create account' : 'Log in'}</button>
       </form>
-      <p class="muted" style="text-align:center">${signup ? 'Have an account? <a href="#account">Log in</a>' : 'New here? <a href="#account/signup">Create an account</a>'}</p>
+      <p class="muted" style="text-align:center">${signup ? 'Have an account? <a href="#account">Log in</a>' : 'New here? <a href="#account/signup">Create an account</a><br><a href="#account/forgot">Forgot password?</a>'}</p>
     </div>`;
   $('#f').onsubmit = async e => {
     e.preventDefault();
@@ -571,6 +582,111 @@ function accountPage(mode = 'login') {
   };
 }
 
+function forgotPage() {
+  app.innerHTML = `
+    <div class="card">
+      <h2>Forgot password</h2>
+      <p class="muted" style="margin-top:0">Enter your account email and we'll send a link to choose a new password.</p>
+      <form id="f">
+        <label for="email">Email</label><input id="email" type="email" autocomplete="email" required>
+        <p class="err" id="err"></p>
+        <button class="big" style="margin-top:4px">Send reset link</button>
+      </form>
+      <p class="muted" style="text-align:center"><a href="#account">Back to log in</a></p>
+    </div>`;
+  $('#f').onsubmit = async e => {
+    e.preventDefault();
+    const btn = $('#f button');
+    btn.disabled = true;
+    try {
+      await call('/api/auth/forgot', { body: { email: $('#email').value } });
+      $('#f').innerHTML = `<p>If <b>${esc($('#email').value)}</b> has an account, a reset link is on its way. It works for one hour. Check your spam folder too.</p>`;
+    } catch (err) { $('#err').textContent = err.message; btn.disabled = false; }
+  };
+}
+
+function resetPage(token) {
+  document.getElementById('sub').textContent = 'Your account';
+  app.innerHTML = `
+    <div class="card">
+      <h2>Choose a new password</h2>
+      <form id="f">
+        <label for="pw">New password</label><input id="pw" type="password" autocomplete="new-password" minlength="8" placeholder="At least 8 characters" required>
+        <p class="err" id="err"></p>
+        <button class="big" style="margin-top:4px">Save password</button>
+      </form>
+    </div>`;
+  $('#f').onsubmit = async e => {
+    e.preventDefault();
+    try {
+      await call('/api/auth/reset', { body: { token, password: $('#pw').value } });
+      await loadAccount();
+      toast('Password changed');
+      location.hash = 'account';
+    } catch (err) { $('#err').textContent = err.message; }
+  };
+}
+
+/* ---------- Developer page: #dev/<key> ---------- */
+async function devPage(key) {
+  document.getElementById('sub').textContent = 'Developer tools';
+  const h = { 'x-dev': key };
+  const get = async path => { const res = await fetch(path, { headers: h }); const d = await res.json(); if (!res.ok) throw new Error(d.error); return d; };
+  const post = async (path, body = {}) => { const res = await fetch(path, { method: 'POST', headers: { ...h, 'content-type': 'application/json' }, body: JSON.stringify(body) }); const d = await res.json(); if (!res.ok) throw new Error(d.error); return d; };
+  let kind = '', open = new Set(), stats, logs;
+  const when = t => new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' });
+  const tile = (n, label) => `<div class="tile"><b>${n}</b><span>${label}</span></div>`;
+  const render = () => {
+    app.innerHTML = `
+      <div class="card">
+        <h2>Overview</h2>
+        <div class="tiles">${tile(stats.groups, 'groups')}${tile(stats.people, 'people')}${tile(stats.items, 'wish items')}${tile(stats.photos, 'photos')}${tile(stats.users, 'accounts')}${tile(stats.errors24h, 'errors (24h)')}</div>
+        <h3>Last 7 days</h3>
+        <ul class="people">${stats.week.map(w => `<li><span class="who"><span class="lk ${w.kind}">${w.kind}</span> ${esc(w.msg)}</span><b>${w.n}</b></li>`).join('') || '<li class="muted">Nothing logged yet.</li>'}</ul>
+      </div>
+      <div class="card">
+        <h2>Health check</h2>
+        <p class="muted" style="margin-top:0">Runs each part of the app for real: database, Amazon search, link pictures, email.</p>
+        <button id="check">Run checks</button>
+        <div id="checks"></div>
+        <h3>Test email</h3>
+        <form class="search" id="mail"><input name="to" type="email" placeholder="you@example.com" required><button>Send</button></form>
+      </div>
+      <div class="card">
+        <h2>Log</h2>
+        <div class="row" style="flex-wrap:wrap">${[['', 'All'], ['error', 'Server errors'], ['client', 'Browser errors'], ['warn', 'Warnings'], ['event', 'Activity']].map(([k, l]) =>
+          `<button class="${k === kind ? '' : 'ghost'}" data-kind="${k}">${l}</button>`).join('')}</div>
+        <div class="row"><button class="ghost" id="refresh">↻ Refresh</button><button class="ghost" id="clear">Clear log</button></div>
+        <div class="logs">${logs.map(l => `<div class="log" data-id="${l.id}">
+          <div><span class="lk ${l.kind}">${l.kind}</span> <b>${esc(l.msg)}</b></div>
+          <small>${when(l.t)} · ${esc(l.path)}</small>
+          ${open.has(l.id) && l.detail ? `<pre>${esc(l.detail)}</pre>` : ''}
+        </div>`).join('') || '<p class="muted">Nothing here.</p>'}</div>
+      </div>`;
+    app.querySelectorAll('[data-kind]').forEach(b => b.onclick = async () => { kind = b.dataset.kind; await load(); });
+    app.querySelectorAll('.log').forEach(el => el.onclick = () => { const id = +el.dataset.id; open.has(id) ? open.delete(id) : open.add(id); render(); });
+    $('#refresh').onclick = load;
+    $('#clear').onclick = async () => { if (confirm('Delete every log entry?')) { await post('/api/dev/clear'); await load(); } };
+    $('#check').onclick = async () => {
+      $('#check').disabled = true; $('#checks').innerHTML = '<p class="muted">Checking… (up to 30 s)</p>';
+      try {
+        const { checks } = await post('/api/dev/check');
+        $('#checks').innerHTML = `<ul class="people">${checks.map(([name, c]) => `<li><span class="who">${c.ok ? '✅' : '❌'} ${name}<small>${esc(c.note || '')}</small></span>${c.ms != null ? `<span class="muted">${c.ms} ms</span>` : ''}</li>`).join('')}</ul>`;
+      } catch (e) { $('#checks').textContent = e.message; }
+      $('#check').disabled = false;
+    };
+    $('#mail').onsubmit = async e => {
+      e.preventDefault();
+      try { await post('/api/dev/mail', { to: e.target.to.value }); toast('Test email sent'); } catch (err) { toast(err.message); }
+    };
+  };
+  const load = async () => {
+    try { [stats, logs] = await Promise.all([get('/api/dev/stats'), get(`/api/dev/logs?kind=${kind}`).then(d => d.logs)]); render(); }
+    catch (e) { oops(e.message); }
+  };
+  await load();
+}
+
 function oops(msg) {
   app.innerHTML = `<div class="card"><h2>Hmm.</h2><p>${esc(msg)}</p><a href="#"><button class="ghost">Start a new group</button></a></div>`;
 }
@@ -579,6 +695,8 @@ function route() {
   const [view, group, key] = location.hash.slice(1).split('/');
   window.scrollTo(0, 0);
   if (view === 'account') accountPage(group);
+  else if (view === 'reset' && group) resetPage(group);
+  else if (view === 'dev' && group) devPage(group);
   else if (view === 'admin' && key) admin(group, key);
   else if (view === 'me' && key) me(group, key);
   else home();

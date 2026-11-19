@@ -127,6 +127,18 @@
   .who small { color: var(--muted); font-weight: 400; font-size: 11px; }
   .who button.on { border-color: var(--red); box-shadow: 0 0 0 1px var(--red); }
   .who button.on .av { background: var(--red); color: #fff; }
+  /* Developer page */
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .tile { background: var(--soft); border-radius: 12px; padding: 10px; text-align: center; }
+  .tile b { display: block; font-size: 24px; color: var(--green); }
+  .tile span { font-size: 12px; color: var(--muted); }
+  .lk { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 1px 6px; border-radius: 6px; background: var(--soft); color: var(--green); }
+  .lk.error, .lk.client { background: var(--red); color: #fff; }
+  .lk.warn { background: var(--gold); color: #fff; }
+  .logs { display: grid; gap: 6px; margin-top: 8px; }
+  .log { padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; overflow-wrap: anywhere; }
+  .log small { color: var(--muted); }
+  .log pre { white-space: pre-wrap; font-size: 12px; background: var(--soft); padding: 8px; border-radius: 8px; margin: 6px 0 0; }
   .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 10px 18px; border-radius: 999px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   .toast.show { opacity: 1; }
   footer { text-align: center; color: var(--muted); font-size: 13px; padding: 0 16px 30px; }
