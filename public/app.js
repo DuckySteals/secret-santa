@@ -202,70 +202,134 @@ async function admin(group, key) {
 }
 
 /* ---------- A participant's private page ---------- */
+const host = u => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return ''; } };
+
+// Shrink a phone photo to a small JPEG before uploading.
+async function shrink(file) {
+  const img = await createImageBitmap(file);
+  const k = Math.min(1, 600 / Math.max(img.width, img.height));
+  const c = Object.assign(document.createElement('canvas'), { width: Math.round(img.width * k), height: Math.round(img.height * k) });
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.8);
+}
+const pickPhoto = () => new Promise(resolve => {
+  const input = Object.assign(document.createElement('input'), { type: 'file', accept: 'image/*' });
+  input.onchange = () => resolve(input.files[0] ? shrink(input.files[0]) : null);
+  input.click();
+});
+
+function itemCard(it, mine) {
+  const open = it.u ? `href="${esc(it.u)}" target="_blank" rel="noopener"` : '';
+  const pic = it.img
+    ? `<img src="${esc(it.img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🎁'}))">`
+    : '<span>🎁</span>';
+  return `<div class="item" data-id="${it.id}">
+    <a class="pic" ${open}>${pic}</a>
+    <div class="info">
+      ${it.u ? `<a class="t" ${open}>${esc(it.t)}</a>` : `<span class="t">${esc(it.t)}</span>`}
+      <div class="meta">${[it.u && host(it.u), it.price].filter(Boolean).map(esc).join(' · ')}</div>
+      ${it.n ? `<div class="note">${esc(it.n)}</div>` : ''}
+      ${mine ? `<div class="acts"><button class="ghost" data-act="photo">${it.img ? 'Change photo' : 'Add photo'}</button><button class="ghost" data-act="del">Remove</button></div>` : ''}
+    </div>
+  </div>`;
+}
+const itemList = (items, mine, empty) => items.length
+  ? `<div class="items">${items.map(it => itemCard(it, mine)).join('')}</div>`
+  : `<p class="muted">${empty}</p>`;
+
 async function me(group, key) {
   const auth = { group, key };
-  let d, opened = false;
+  let d, opened = false, tab;
+  const store = (k, v) => { try { v === undefined ? (v = sessionStorage.getItem(k)) : sessionStorage.setItem(k, v); } catch {} return v; };
+  const readKey = `santa.read.${group}`;
+  const incoming = () => d.toGiftee.filter(m => m.s === 0).length + d.fromSanta.filter(m => m.s === 1).length;
+  const unread = () => { let r = 0; try { r = +localStorage.getItem(readKey) || 0; } catch {} return Math.max(0, incoming() - r); };
   const thread = (msgs, mineFlag) => msgs.length
     ? msgs.map(m => `<div class="msg ${m.s === mineFlag ? 'mine' : ''}">${esc(m.x)}</div>`).join('')
     : '<p class="muted">No messages yet.</p>';
-  const render = () => {
-    document.getElementById('sub').textContent = d.name;
-    const keepWish = $('#mywish')?.value;
-    const viewer = d.me.viewer;
-    const others = d.lists.filter(l => l.name !== d.giftee?.name);
-    app.innerHTML = `${viewer ? `
-      <div class="card reveal">
-        <div class="tag">Hi ${esc(d.me.name)}</div>
-        <div class="name" style="font-size:30px">You're a viewer</div>
-        <p class="muted">You're not in the name draw. Share your wish list and browse everyone else's.</p>
-        ${facts(d)}
-      </div>` : `
+  const giftBox = `
+    <svg class="gift" id="gift" viewBox="0 0 100 100" role="button" aria-label="Open to reveal">
+      <rect x="14" y="44" width="72" height="50" rx="4" fill="#b3262f"/>
+      <rect x="45" y="44" width="10" height="50" fill="#c99a3b"/>
+      <g class="lid"><rect x="8" y="30" width="84" height="16" rx="3" fill="#8f1d25"/>
+      <rect x="45" y="30" width="10" height="16" fill="#c99a3b"/>
+      <path d="M50 30 C 34 10, 22 26, 50 30 C 78 26, 66 10, 50 30" fill="none" stroke="#c99a3b" stroke-width="5"/></g>
+    </svg>
+    <p class="muted">Tap the gift to see who</p>`;
+
+  const pages = {
+    person: () => `
       <div class="card reveal">
         <div class="tag">Hi ${esc(d.me.name)}, you're the Secret Santa for</div>
-        ${opened ? `<div class="name">${esc(d.giftee.name)}</div>` : `
-          <svg class="gift" id="gift" viewBox="0 0 100 100" role="button" aria-label="Open to reveal">
-            <rect x="14" y="44" width="72" height="50" rx="4" fill="#b3262f"/>
-            <rect x="45" y="44" width="10" height="50" fill="#c99a3b"/>
-            <g class="lid"><rect x="8" y="30" width="84" height="16" rx="3" fill="#8f1d25"/>
-            <rect x="45" y="30" width="10" height="16" fill="#c99a3b"/>
-            <path d="M50 30 C 34 10, 22 26, 50 30 C 78 26, 66 10, 50 30" fill="none" stroke="#c99a3b" stroke-width="5"/></g>
-          </svg>
-          <p class="muted">Tap the gift to see who</p>`}
+        ${opened ? `<div class="name">${esc(d.giftee.name)}</div>` : giftBox}
         ${facts(d)}
-      </div>`}
-      ${opened && !viewer ? `
-      <div class="card">
+      </div>
+      ${opened ? `<div class="card">
         <h2>${esc(d.giftee.name)}'s wish list</h2>
-        ${d.giftee.wish ? `<p class="wish">${linkify(d.giftee.wish)}</p>` : `<p class="muted">${esc(d.giftee.name)} hasn't written one yet. Check back, or ask below.</p>`}
-        <h3>Ask ${esc(d.giftee.name)} a question</h3>
+        ${itemList(d.giftee.items, false, `${esc(d.giftee.name)} hasn't added anything yet. Check back, or ask in Messages.`)}
+      </div>` : ''}`,
+    messages: () => `
+      ${opened ? `<div class="card">
+        <h2>Ask ${esc(d.giftee.name)}</h2>
         <p class="muted" style="margin-top:0">They'll see it as from "your Secret Santa".</p>
         <div class="msgs">${thread(d.toGiftee, 1)}</div>
         <div class="row"><input id="toGiftee" maxlength="500" placeholder="What size do you wear?"><button id="sendGiftee">Send</button></div>
-      </div>` : ''}
+      </div>` : `<div class="card"><p class="muted">Open your gift on the first tab to message your person.</p></div>`}
       <div class="card">
-        <h2>Your wish list</h2>
-        <p class="muted" style="margin-top:0">Everyone in the group can see this. Add ideas, sizes, links.</p>
-        <textarea id="mywish" maxlength="2000" placeholder="Wool socks (size L)&#10;A good book&#10;https://…">${esc(keepWish ?? d.me.wish)}</textarea>
-        <button id="savewish" style="margin-top:8px">Save wish list</button>
-        ${viewer ? '' : `<h3>Messages from your Secret Santa</h3>
+        <h2>From your Secret Santa</h2>
         <div class="msgs">${thread(d.fromSanta, 0)}</div>
-        ${d.fromSanta.length ? `<div class="row"><input id="toSanta" maxlength="500" placeholder="Reply…"><button id="sendSanta">Reply</button></div>` : ''}`}
+        ${d.fromSanta.length ? `<div class="row"><input id="toSanta" maxlength="500" placeholder="Reply…"><button id="sendSanta">Reply</button></div>` : ''}
+      </div>`,
+    list: () => `
+      <div class="card">
+        <h2>Add to your list</h2>
+        <p class="muted" style="margin-top:0">Paste a link and the picture and name fill in. Everyone in the group can see your list.</p>
+        <label for="addUrl">Link</label>
+        <input id="addUrl" type="url" inputmode="url" placeholder="https://www.amazon.com/…">
+        <label for="addName">Name <span class="muted">(optional with a link)</span></label>
+        <input id="addName" maxlength="120" placeholder="Wool socks">
+        <label for="addNote">Note <span class="muted">(size, color…)</span></label>
+        <input id="addNote" maxlength="300" placeholder="Size L, any dark color">
+        <div class="row" style="margin-top:12px">
+          <button class="ghost" id="addPhoto">📷 Add photo</button>
+          <span class="muted" id="photoState"></span>
+        </div>
+        <button class="big" id="addItem" style="margin-top:8px">Add to list</button>
         <p class="err" id="err"></p>
       </div>
       <div class="card">
-        <h2>Everyone's wish lists</h2>
-        ${others.length ? others.map(l => `<h3>${esc(l.name)}${l.viewer ? ' <span class="muted">(viewer)</span>' : ''}</h3><p class="wish">${linkify(l.wish)}</p>`).join('')
-          : '<p class="muted">Nobody else has written one yet.</p>'}
-      </div>`;
+        <h2>Your list</h2>
+        ${itemList(d.me.items, true, 'Nothing yet. Add your first idea above.')}
+      </div>`,
+    everyone: () => `
+      ${d.lists.map(l => `<div class="card">
+        <h2>${esc(l.name)}${l.viewer ? ' <span class="muted" style="font-size:15px">(viewer)</span>' : ''}</h2>
+        ${itemList(l.items, false, 'Nothing added yet.')}
+      </div>`).join('') || '<div class="card"><p class="muted">Nobody else is in this group yet.</p></div>'}`,
+  };
+  const tabs = d0 => d0.me.viewer
+    ? [['list', '📝', 'My list'], ['everyone', '👥', 'Everyone']]
+    : [['person', '🎁', 'My person'], ['messages', '💬', 'Messages'], ['list', '📝', 'My list'], ['everyone', '👥', 'Everyone']];
 
+  let photo = null;
+  const render = () => {
+    document.getElementById('sub').textContent = d.name;
+    if (!tabs(d).some(([id]) => id === tab)) tab = tabs(d)[0][0];
+    if (tab === 'messages') try { localStorage.setItem(readKey, incoming()); } catch {}
+    const n = unread();
+    app.innerHTML = `
+      <nav class="tabs">${tabs(d).map(([id, icon, label]) =>
+        `<button class="${id === tab ? 'on' : ''}" data-tab="${id}"><span class="i">${icon}</span>${label}${id === 'messages' && n ? `<b class="badge">${n}</b>` : ''}</button>`).join('')}</nav>
+      ${d.me.viewer && tab === 'list' ? `<div class="card reveal"><div class="tag">Hi ${esc(d.me.name)}</div>
+        <p class="muted">You're a viewer: not in the name draw. Share your list and browse everyone else's.</p>${facts(d)}</div>` : ''}
+      ${pages[tab]()}`;
+
+    app.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { tab = store(`santa.tab.${group}`, b.dataset.tab); render(); scrollTo(0, 0); });
+    const err = msg => { const e = $('#err'); e ? (e.textContent = msg) : toast(msg); };
     const gift = $('#gift');
     if (gift) gift.onclick = () => {
       gift.classList.add('open');
-      setTimeout(() => { opened = true; try { sessionStorage.setItem(`santa.open.${group}`, 1); } catch {} render(); }, 450);
-    };
-    $('#savewish').onclick = async () => {
-      try { d = await call('/api/me/wish', { ...auth, body: { wish: $('#mywish').value } }); render(); toast('Wish list saved'); }
-      catch (e) { $('#err').textContent = e.message; }
+      setTimeout(() => { opened = true; store(`santa.open.${group}`, 1); render(); }, 450);
     };
     const sender = (input, btn, to) => {
       const el = $(input);
@@ -273,7 +337,7 @@ async function me(group, key) {
       const send = async () => {
         if (!el.value.trim()) return;
         try { d = await call('/api/me/msg', { ...auth, body: { to, text: el.value } }); render(); toast('Sent'); }
-        catch (e) { $('#err').textContent = e.message; }
+        catch (e) { toast(e.message); }
       };
       $(btn).onclick = send;
       el.onkeydown = e => { if (e.key === 'Enter') send(); };
@@ -281,18 +345,51 @@ async function me(group, key) {
     sender('#toGiftee', '#sendGiftee', 'giftee');
     sender('#toSanta', '#sendSanta', 'santa');
     app.querySelectorAll('.msgs').forEach(m => { m.scrollTop = m.scrollHeight; });
+
+    if (tab === 'list') {
+      $('#addPhoto').onclick = async () => {
+        photo = await pickPhoto().catch(() => null);
+        $('#photoState').textContent = photo ? '✓ Photo added' : '';
+      };
+      $('#addItem').onclick = async () => {
+        const body = { u: $('#addUrl').value.trim(), t: $('#addName').value.trim(), n: $('#addNote').value.trim(), photo };
+        if (!body.u && !body.t) return err('Paste a link or type a name.');
+        const btn = $('#addItem');
+        btn.disabled = true;
+        btn.textContent = body.u ? 'Getting the picture…' : 'Adding…';
+        try { d = await call('/api/me/item', { ...auth, body }); photo = null; render(); toast('Added'); }
+        catch (e) { btn.disabled = false; btn.textContent = 'Add to list'; err(e.message); }
+      };
+      app.querySelectorAll('.item [data-act]').forEach(b => b.onclick = async () => {
+        const id = b.closest('.item').dataset.id;
+        try {
+          if (b.dataset.act === 'del') {
+            if (!confirm('Remove this from your list?')) return;
+            d = await call('/api/me/item/remove', { ...auth, body: { id } });
+          } else {
+            const p = await pickPhoto();
+            if (!p) return;
+            b.textContent = 'Uploading…';
+            d = await call('/api/me/item/photo', { ...auth, body: { id, photo: p } });
+          }
+          render();
+        } catch (e) { err(e.message); }
+      });
+    }
   };
-  try { opened = !!sessionStorage.getItem(`santa.open.${group}`); } catch {}
+
+  opened = !!store(`santa.open.${group}`);
+  tab = store(`santa.tab.${group}`);
   try { d = await call('/api/me', auth); } catch (e) { return oops(e.message); }
   render();
-  // Pick up new messages while the page is open, unless the person is typing.
+  // Pick up new messages and list changes while the page is open, unless the person is typing.
   clearInterval(me.timer);
   me.timer = setInterval(async () => {
-    const typing = ['toGiftee', 'toSanta'].some(id => document.getElementById(id)?.value);
+    const typing = [...app.querySelectorAll('input')].some(i => i.value) || photo;
     if (document.hidden || typing || !location.hash.startsWith('#me/')) return;
     try {
       const fresh = await call('/api/me', auth);
-      if (JSON.stringify([fresh.toGiftee, fresh.fromSanta, fresh.giftee, fresh.lists]) !== JSON.stringify([d.toGiftee, d.fromSanta, d.giftee, d.lists])) { d = fresh; render(); }
+      if (JSON.stringify(fresh) !== JSON.stringify(d)) { d = fresh; render(); }
     } catch {}
   }, 30000);
 }

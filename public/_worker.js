@@ -1,7 +1,7 @@
+import { preview } from '../src/preview.js';
 // Secret Santa: organizers create a group, the worker draws names, and each
 // person opens a private link to see who they're buying for.
 const MAX_PEOPLE = 100;
-const MAX_TEXT = 2000;
 
 const rand = (n = 12) => {
   const b = crypto.getRandomValues(new Uint8Array(n));
@@ -47,6 +47,21 @@ function redraw(g) {
   return null;
 }
 
+// A photo someone added themselves: a small JPEG/PNG/WebP sent as a data URL.
+async function savePhoto(env, gid, photo) {
+  const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(photo || '');
+  if (!m || m[2].length > 400000) return null;
+  const id = rand(12);
+  await env.DB.prepare('INSERT INTO images (id, gid, type, data) VALUES (?, ?, ?, ?)').bind(id, gid, m[1], m[2]).run();
+  return `/api/img/${id}`;
+}
+const dropPhoto = (env, img) => img?.startsWith('/api/img/') &&
+  env.DB.prepare('DELETE FROM images WHERE id = ?').bind(img.slice(9)).run();
+
+// Wish lists were plain text before they became item cards.
+const items = p => p.items || (p.items = (p.wish || '').split('\n').map(t => t.trim()).filter(Boolean).map(t => ({ id: rand(4), t })));
+const pub = p => ({ name: p.name, viewer: !!p.viewer, items: items(p) });
+
 const info = g => ({ name: g.name, budget: g.budget, date: g.date, note: g.note, count: g.people.filter(p => !p.viewer).length, viewers: g.people.filter(p => p.viewer).length });
 
 async function api(req, env, path) {
@@ -55,7 +70,7 @@ async function api(req, env, path) {
   const key = req.headers.get('x-key') || '';
 
   if (path === '/api/groups' && req.method === 'POST') {
-    const people = (body.people || []).map(p => ({ id: rand(4), key: rand(), name: clip(p.name, 40), viewer: !!p.viewer, wish: '', seen: 0 }));
+    const people = (body.people || []).map(p => ({ id: rand(4), key: rand(), name: clip(p.name, 40), viewer: !!p.viewer, items: [], seen: 0 }));
     if (people.some(p => !p.name)) return fail('Every person needs a name.');
     if (new Set(people.map(p => p.name.toLowerCase())).size !== people.length) return fail('Two people have the same name.');
     if (people.length > MAX_PEOPLE) return fail(`Up to ${MAX_PEOPLE} people.`);
@@ -72,6 +87,14 @@ async function api(req, env, path) {
     return json({ id: g.id, admin: g.admin });
   }
 
+  if (path.startsWith('/api/img/')) {
+    const row = await env.DB.prepare('SELECT type, data FROM images WHERE id = ?').bind(path.slice(9)).first();
+    if (!row) return fail('Not found', 404);
+    return new Response(Uint8Array.from(atob(row.data), c => c.charCodeAt(0)), {
+      headers: { 'content-type': row.type, 'cache-control': 'public, max-age=31536000, immutable' },
+    });
+  }
+
   const g = gid && await load(env, gid);
   if (!g) return fail('This group no longer exists.', 404);
 
@@ -82,7 +105,7 @@ async function api(req, env, path) {
       const name = clip(body.name, 40);
       if (!name || g.people.some(p => p.name.toLowerCase() === name.toLowerCase())) return fail('Enter a new, unique name.');
       if (g.people.length >= MAX_PEOPLE) return fail(`Up to ${MAX_PEOPLE} people.`);
-      g.people.push({ id: rand(4), key: rand(), name, viewer: !!body.viewer, wish: '', seen: 0 });
+      g.people.push({ id: rand(4), key: rand(), name, viewer: !!body.viewer, items: [], seen: 0 });
       reshuffle = !body.viewer;
     } else if (path === '/api/admin/remove' && req.method === 'POST') {
       reshuffle = !g.people.find(p => p.id === body.id)?.viewer;
@@ -91,7 +114,7 @@ async function api(req, env, path) {
     } else if (path === '/api/admin/redraw' && req.method === 'POST') {
       // fall through to redraw below
     } else if (path === '/api/admin/delete' && req.method === 'POST') {
-      await env.DB.prepare('DELETE FROM groups WHERE id = ?').bind(g.id).run();
+      await env.DB.batch([env.DB.prepare('DELETE FROM groups WHERE id = ?').bind(g.id), env.DB.prepare('DELETE FROM images WHERE gid = ?').bind(g.id)]);
       return json({ ok: true });
     } else if (req.method !== 'GET') return fail('Not found', 404);
     if (req.method === 'POST') {
@@ -103,7 +126,7 @@ async function api(req, env, path) {
       await save(env, g);
     }
     // The organizer sees links and who has looked, never who drew whom.
-    return json({ ...info(g), people: g.people.map(({ id, key, name, seen, wish, viewer }) => ({ id, key, name, seen, viewer: !!viewer, hasWish: !!wish })) });
+    return json({ ...info(g), people: g.people.map(p => ({ id: p.id, key: p.key, name: p.name, seen: p.seen, viewer: !!p.viewer, hasWish: items(p).length > 0 })) });
   }
 
   const [pid, secret] = key.split('.');
@@ -113,8 +136,24 @@ async function api(req, env, path) {
   const santaId = Object.keys(g.match).find(id => g.match[id] === me.id);
   g.msgs ||= {};
 
-  if (path === '/api/me/wish' && req.method === 'POST') {
-    me.wish = clip(body.wish, MAX_TEXT);
+  if (path === '/api/me/item' && req.method === 'POST') {
+    let url = clip(body.u, 1000);
+    if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
+    if (url && !URL.canParse(url)) return fail("That link doesn't look right.");
+    if (!url && !clip(body.t)) return fail('Add a name or a link.');
+    if (items(me).length >= 50) return fail('Up to 50 items.');
+    const photo = body.photo && await savePhoto(env, g.id, body.photo);
+    const p = url ? await preview(url, env) : {};
+    me.items.push({ id: rand(4), t: clip(body.t, 120) || p.title || new URL(url).hostname.replace(/^www\./, ''), u: url, img: photo || p.img, price: clip(body.price, 20) || p.price, n: clip(body.n, 300) });
+  } else if (path === '/api/me/item/photo' && req.method === 'POST') {
+    const item = items(me).find(i => i.id === body.id);
+    const photo = item && await savePhoto(env, g.id, body.photo);
+    if (!photo) return fail("Couldn't use that photo. Try another.");
+    await dropPhoto(env, item.img);
+    item.img = photo;
+  } else if (path === '/api/me/item/remove' && req.method === 'POST') {
+    await dropPhoto(env, items(me).find(i => i.id === body.id)?.img);
+    me.items = items(me).filter(i => i.id !== body.id);
   } else if (path === '/api/me/msg' && req.method === 'POST') {
     if (me.viewer) return fail('Viewers are not in the draw.');
     const text = clip(body.text, 500);
@@ -130,12 +169,12 @@ async function api(req, env, path) {
   }
   return json({
     ...info(g),
-    me: { name: me.name, wish: me.wish, viewer: !!me.viewer },
-    giftee: giftee && { name: giftee.name, wish: giftee.wish },
+    me: pub(me),
+    giftee: giftee && pub(giftee),
     toGiftee: g.msgs[me.id] || [],
     fromSanta: g.msgs[santaId] || [],
     // Everyone's lists (never who drew whom), so viewers and shoppers can browse.
-    lists: g.people.filter(p => p !== me && p.wish).map(p => ({ name: p.name, wish: p.wish, viewer: !!p.viewer })),
+    lists: g.people.filter(p => p !== me).map(pub),
   });
 }
 
