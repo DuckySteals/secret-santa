@@ -305,9 +305,15 @@ async function me(group, key) {
   let d, opened = false, showing = false, tab, who = 0, photo = null, paste = null;
   const shop = { list: { q: '', results: null }, person: { q: '', results: null } };
   const store = (k, v) => { try { v === undefined ? (v = sessionStorage.getItem(k)) : sessionStorage.setItem(k, v); } catch {} return v; };
-  const readKey = `santa.read.${group}`;
-  const incoming = () => d.toGiftee.filter(m => m.s === 0).length + d.fromSanta.filter(m => m.s === 1).length;
-  const unread = () => { let r = 0; try { r = +localStorage.getItem(readKey) || 0; } catch {} return Math.max(0, incoming() - r); };
+  // Two private chats. Each shows only after you tap it, and closes when you leave.
+  const chats = {
+    giftee: { title: 'Your person', icon: '🎁', note: 'They see you as "your Secret Santa".', msgs: () => d.toGiftee, mine: 1, hint: 'What size do you wear?' },
+    santa: { title: 'Your Secret Santa', icon: '🎅', note: "You'll find out who they are at the gift exchange.", msgs: () => d.fromSanta, mine: 0, hint: 'Write a message…' },
+  };
+  const readKey = c => `santa.read.${group}.${c}`;
+  const incoming = c => chats[c].msgs().filter(m => m.s !== chats[c].mine).length;
+  const unread = c => { if (!c) return unread('giftee') + unread('santa'); let r = 0; try { r = +localStorage.getItem(readKey(c)) || 0; } catch {} return Math.max(0, incoming(c) - r); };
+  let chat = null;
   const thread = (msgs, mineFlag) => msgs.length
     ? msgs.map(m => `<div class="msg ${m.s === mineFlag ? 'mine' : ''}">${esc(m.x)}</div>`).join('')
     : '<p class="muted">No messages yet.</p>';
@@ -351,18 +357,29 @@ async function me(group, key) {
       </div>
       ${search('person', 'Find a gift', 'Search Amazon for gift ideas')}` : ''}
       ${install.card()}`,
-    messages: () => `
-      ${opened ? `<div class="card">
-        <h2>Ask your person</h2>
-        <p class="muted" style="margin-top:0">They'll see it as from "your Secret Santa".</p>
-        <div class="msgs">${thread(d.toGiftee, 1)}</div>
-        <div class="row"><input id="toGiftee" maxlength="500" placeholder="What size do you wear?"><button id="sendGiftee">Send</button></div>
-      </div>` : `<div class="card"><p class="muted">Open your gift on the first tab to message your person.</p></div>`}
-      <div class="card">
-        <h2>From your Secret Santa</h2>
-        <div class="msgs">${thread(d.fromSanta, 0)}</div>
-        ${d.fromSanta.length ? `<div class="row"><input id="toSanta" maxlength="500" placeholder="Reply…"><button id="sendSanta">Reply</button></div>` : ''}
-      </div>`,
+    messages: () => {
+      if (chat) {
+        const c = chats[chat];
+        return `<div class="chat">
+          <div class="chat-top"><button class="ghost" id="back">← Back</button><b>${c.icon} ${c.title}</b></div>
+          <p class="muted chat-note">${c.note}</p>
+          <div class="msgs">${thread(c.msgs(), c.mine)}</div>
+          <form class="chat-send" id="send"><input name="t" maxlength="500" placeholder="${c.hint}" autocomplete="off"><button>Send</button></form>
+        </div>`;
+      }
+      return `<div class="card">
+        <h2>Messages</h2>
+        <p class="muted" style="margin-top:0">Chats stay closed until you tap one, so nobody glancing at your phone sees them.</p>
+        <div class="convos">${Object.entries(chats).map(([id, c]) => {
+          const locked = id === 'giftee' && !opened, n = unread(id);
+          return `<button class="convo" data-chat="${id}" ${locked ? 'disabled' : ''}>
+            <span class="av">${c.icon}</span>
+            <span class="cv"><b>${c.title}</b><small>${locked ? 'Open your present first' : n ? `${n} new message${n > 1 ? 's' : ''}` : 'Tap to open'}</small></span>
+            ${n ? `<b class="dot">${n}</b>` : '<span class="muted">›</span>'}
+          </button>`;
+        }).join('')}</div>
+      </div>`;
+    },
     list: () => `
       <div class="card">
         <h2>My wish list${d.me.items.length ? ` <span class="count">${d.me.items.length}</span>` : ''}</h2>
@@ -404,7 +421,8 @@ async function me(group, key) {
   const render = () => {
     document.getElementById('sub').textContent = d.name;
     if (!tabs(d).some(([id]) => id === tab)) tab = tabs(d)[0][0];
-    if (tab === 'messages') try { localStorage.setItem(readKey, incoming()); } catch {}
+    if (tab !== 'messages') chat = null;
+    if (chat) try { localStorage.setItem(readKey(chat), incoming(chat)); } catch {}
     const n = unread();
     app.innerHTML = `
       ${d.me.viewer && tab === 'list' ? `<div class="card reveal"><div class="tag">Hi ${esc(d.me.name)}</div>
@@ -429,19 +447,17 @@ async function me(group, key) {
     };
     const hide = $('#hide');
     if (hide) hide.onclick = () => { showing = false; render(); };
-    const sender = (input, btn, to) => {
-      const el = $(input);
-      if (!el) return;
-      const send = async () => {
-        if (!el.value.trim()) return;
-        try { d = await call('/api/me/msg', { ...auth, body: { to, text: el.value } }); render(); toast('Sent'); }
-        catch (e) { toast(e.message); }
-      };
-      $(btn).onclick = send;
-      el.onkeydown = e => { if (e.key === 'Enter') send(); };
+    app.querySelectorAll('[data-chat]').forEach(b => b.onclick = () => { chat = b.dataset.chat; render(); });
+    const back = $('#back');
+    if (back) back.onclick = () => { chat = null; render(); };
+    const send = $('#send');
+    if (send) send.onsubmit = async e => {
+      e.preventDefault();
+      const text = send.t.value.trim();
+      if (!text) return;
+      try { d = await call('/api/me/msg', { ...auth, body: { to: chat, text } }); render(); $('#send').t.focus(); }
+      catch (e) { toast(e.message); }
     };
-    sender('#toGiftee', '#sendGiftee', 'giftee');
-    sender('#toSanta', '#sendSanta', 'santa');
     app.querySelectorAll('.msgs').forEach(m => { m.scrollTop = m.scrollHeight; });
 
     app.querySelectorAll('[data-shop]').forEach(f => f.onsubmit = async e => {
@@ -497,6 +513,7 @@ async function me(group, key) {
     }
   };
 
+  document.onvisibilitychange = () => { if (document.hidden && (chat || showing)) { chat = null; showing = false; render(); } };
   opened = !!store(`santa.open.${group}`);
   tab = store(`santa.tab.${group}`);
   try { d = await call('/api/me', auth); } catch (e) { return oops(e.message); }
@@ -504,14 +521,16 @@ async function me(group, key) {
   render();
   // Pick up new messages and list changes while the page is open, unless the person is typing.
   clearInterval(me.timer);
+  me.ticks = 0;
   me.timer = setInterval(async () => {
     const typing = [...app.querySelectorAll('input')].some(i => i.value) || photo;
-    if (document.hidden || typing || !location.hash.startsWith('#me/')) return;
+    // Every 5 s while a chat is open, otherwise every 30 s.
+    if (document.hidden || typing || !location.hash.startsWith('#me/') || (!chat && ++me.ticks % 6)) return;
     try {
       const fresh = await call('/api/me', auth);
       if (JSON.stringify(fresh) !== JSON.stringify(d)) { d = fresh; render(); }
     } catch {}
-  }, 30000);
+  }, 5000);
 }
 
 /* ---------- Account: email + password ---------- */

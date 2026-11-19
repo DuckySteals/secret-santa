@@ -66,6 +66,21 @@
   .reveal .facts { justify-content: center; }
   .people .who small { display: block; font-weight: 400; color: var(--muted); }
   .people button { padding: 8px 12px; font-size: 14px; }
+  /* Messages: a list of chats; a chat opens full screen over the tabs. */
+  .convos { display: grid; gap: 8px; }
+  .convo { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 12px; background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: 14px; font-weight: 400; }
+  .convo .av { width: 44px; height: 44px; flex: 0 0 44px; border-radius: 50%; display: grid; place-items: center; background: var(--soft); font-size: 22px; }
+  .convo .cv { flex: 1; min-width: 0; }
+  .convo small { display: block; color: var(--muted); font-size: 13px; }
+  .convo .dot { min-width: 22px; padding: 0 6px; border-radius: 11px; background: var(--red); color: #fff; font-size: 12px; line-height: 22px; text-align: center; }
+  .chat { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; background: var(--bg); padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+  .chat-top { display: flex; align-items: center; gap: 12px; padding: 10px 12px; background: var(--card); border-bottom: 1px solid var(--line); }
+  .chat-top button { padding: 8px 12px; }
+  .chat-note { text-align: center; margin: 10px 16px 0; font-size: 13px; }
+  .chat .msgs { flex: 1; max-height: none; margin: 0; padding: 12px 16px; }
+  .chat-send { display: flex; gap: 8px; padding: 10px 12px; background: var(--card); border-top: 1px solid var(--line); }
+  .chat-send input { flex: 1; min-width: 0; }
+  body:has(.chat) { overflow: hidden; }
   .msgs { max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
   .msg { max-width: 82%; padding: 8px 12px; border-radius: 14px; background: var(--soft); align-self: flex-start; white-space: pre-wrap; overflow-wrap: anywhere; }
   .msg.mine { align-self: flex-end; background: var(--green); color: #fff; }
