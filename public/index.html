@@ -32,6 +32,8 @@
   input:focus, textarea:focus, select:focus { outline: 2px solid var(--gold); border-color: transparent; }
   .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
   .row > input, .row > select { flex: 1; min-width: 0; }
+  .check { display: flex; align-items: center; gap: 4px; margin: 0; font-size: 13px; font-weight: 600; color: var(--muted); white-space: nowrap; cursor: pointer; }
+  .check input { width: auto; margin: 0; accent-color: var(--red); }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
   button { font: 600 15px Inter, sans-serif; border: 0; border-radius: 10px; padding: 11px 16px; cursor: pointer; background: var(--red); color: #fff; }
   button.ghost { background: transparent; color: var(--green); border: 1px solid var(--line); }

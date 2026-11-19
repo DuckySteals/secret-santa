@@ -36,16 +36,18 @@ function draw(people, exclude) {
   return null;
 }
 
+// Viewers write and read wish lists but aren't in the draw.
 function redraw(g) {
-  if (g.people.length < 3) return 'You need at least 3 people.';
-  const match = draw(g.people, g.exclude);
+  const drawn = g.people.filter(p => !p.viewer);
+  if (drawn.length < 3) return 'You need at least 3 people in the draw.';
+  const match = draw(drawn, g.exclude);
   if (!match) return "Those no-match pairs make a draw impossible. Remove one and try again.";
   g.match = match;
   g.msgs = {};
   return null;
 }
 
-const info = g => ({ name: g.name, budget: g.budget, date: g.date, note: g.note, count: g.people.length });
+const info = g => ({ name: g.name, budget: g.budget, date: g.date, note: g.note, count: g.people.filter(p => !p.viewer).length, viewers: g.people.filter(p => p.viewer).length });
 
 async function api(req, env, path) {
   const body = req.method === 'GET' ? {} : await req.json().catch(() => ({}));
@@ -53,10 +55,10 @@ async function api(req, env, path) {
   const key = req.headers.get('x-key') || '';
 
   if (path === '/api/groups' && req.method === 'POST') {
-    const names = (body.people || []).map(n => clip(n, 40)).filter(Boolean);
-    if (new Set(names.map(n => n.toLowerCase())).size !== names.length) return fail('Two people have the same name.');
-    if (names.length > MAX_PEOPLE) return fail(`Up to ${MAX_PEOPLE} people.`);
-    const people = names.map(name => ({ id: rand(4), key: rand(), name, wish: '', seen: 0 }));
+    const people = (body.people || []).map(p => ({ id: rand(4), key: rand(), name: clip(p.name, 40), viewer: !!p.viewer, wish: '', seen: 0 }));
+    if (people.some(p => !p.name)) return fail('Every person needs a name.');
+    if (new Set(people.map(p => p.name.toLowerCase())).size !== people.length) return fail('Two people have the same name.');
+    if (people.length > MAX_PEOPLE) return fail(`Up to ${MAX_PEOPLE} people.`);
     const exclude = (body.exclude || [])
       .map(([a, b]) => [people[a]?.id, people[b]?.id])
       .filter(([a, b]) => a && b && a !== b);
@@ -75,12 +77,15 @@ async function api(req, env, path) {
 
   if (path.startsWith('/api/admin')) {
     if (key !== g.admin) return fail('Wrong organizer link.', 403);
+    let reshuffle = true;
     if (path === '/api/admin/add' && req.method === 'POST') {
       const name = clip(body.name, 40);
       if (!name || g.people.some(p => p.name.toLowerCase() === name.toLowerCase())) return fail('Enter a new, unique name.');
       if (g.people.length >= MAX_PEOPLE) return fail(`Up to ${MAX_PEOPLE} people.`);
-      g.people.push({ id: rand(4), key: rand(), name, wish: '', seen: 0 });
+      g.people.push({ id: rand(4), key: rand(), name, viewer: !!body.viewer, wish: '', seen: 0 });
+      reshuffle = !body.viewer;
     } else if (path === '/api/admin/remove' && req.method === 'POST') {
+      reshuffle = !g.people.find(p => p.id === body.id)?.viewer;
       g.people = g.people.filter(p => p.id !== body.id);
       g.exclude = g.exclude.filter(pair => !pair.includes(body.id));
     } else if (path === '/api/admin/redraw' && req.method === 'POST') {
@@ -90,25 +95,28 @@ async function api(req, env, path) {
       return json({ ok: true });
     } else if (req.method !== 'GET') return fail('Not found', 404);
     if (req.method === 'POST') {
-      const err = redraw(g);
-      if (err) return fail(err);
-      g.people.forEach(p => { p.seen = 0; });
+      if (reshuffle) {
+        const err = redraw(g);
+        if (err) return fail(err);
+        g.people.forEach(p => { p.seen = 0; });
+      }
       await save(env, g);
     }
     // The organizer sees links and who has looked, never who drew whom.
-    return json({ ...info(g), people: g.people.map(({ id, key, name, seen, wish }) => ({ id, key, name, seen, hasWish: !!wish })) });
+    return json({ ...info(g), people: g.people.map(({ id, key, name, seen, wish, viewer }) => ({ id, key, name, seen, viewer: !!viewer, hasWish: !!wish })) });
   }
 
   const [pid, secret] = key.split('.');
   const me = g.people.find(p => p.id === pid && p.key === secret);
   if (!me) return fail('This link has expired. Ask your organizer for a new one.', 403);
-  const giftee = g.people.find(p => p.id === g.match[me.id]);
+  const giftee = !me.viewer && g.people.find(p => p.id === g.match[me.id]);
   const santaId = Object.keys(g.match).find(id => g.match[id] === me.id);
   g.msgs ||= {};
 
   if (path === '/api/me/wish' && req.method === 'POST') {
     me.wish = clip(body.wish, MAX_TEXT);
   } else if (path === '/api/me/msg' && req.method === 'POST') {
+    if (me.viewer) return fail('Viewers are not in the draw.');
     const text = clip(body.text, 500);
     if (!text) return fail('Write a message first.');
     // A thread is keyed by the Santa's id: s=1 from the Santa, s=0 from the giftee.
@@ -122,10 +130,12 @@ async function api(req, env, path) {
   }
   return json({
     ...info(g),
-    me: { name: me.name, wish: me.wish },
-    giftee: { name: giftee.name, wish: giftee.wish },
+    me: { name: me.name, wish: me.wish, viewer: !!me.viewer },
+    giftee: giftee && { name: giftee.name, wish: giftee.wish },
     toGiftee: g.msgs[me.id] || [],
     fromSanta: g.msgs[santaId] || [],
+    // Everyone's lists (never who drew whom), so viewers and shoppers can browse.
+    lists: g.people.filter(p => p !== me && p.wish).map(p => ({ name: p.name, wish: p.wish, viewer: !!p.viewer })),
   });
 }
 

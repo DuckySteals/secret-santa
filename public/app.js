@@ -32,7 +32,8 @@ const saved = {
 const facts = g => `<ul class="facts">${[
   g.budget && `Budget: ${esc(g.budget)}`,
   g.date && `Exchange: ${esc(new Date(g.date + 'T12:00').toLocaleDateString(undefined, { weekday: 'short', month: 'long', day: 'numeric' }))}`,
-  g.count && `${g.count} people`,
+  g.count && `${g.count} in the draw`,
+  g.viewers && `${g.viewers} viewer${g.viewers > 1 ? 's' : ''}`,
 ].filter(Boolean).map(f => `<li>${f}</li>`).join('')}</ul>${g.note ? `<p class="wish" style="margin-top:12px">${linkify(g.note)}</p>` : ''}`;
 
 async function share(url, text) {
@@ -55,7 +56,7 @@ function home() {
     <div class="card">
       <h2>Start a gift exchange</h2>
       <ol class="steps muted">
-        <li>Add everyone, including yourself.</li>
+        <li>Add everyone, including yourself. Tick <b>Viewer</b> for anyone who should share and see wish lists without being in the draw.</li>
         <li>Names are drawn the moment you create the group.</li>
         <li>Text each person their private link. They see who they're buying for, and their wish list.</li>
       </ol>
@@ -79,19 +80,21 @@ function home() {
     </div>`;
 
   const names = $('#names'), pairs = $('#pairs');
-  const list = () => [...names.querySelectorAll('input')].map(i => i.value.trim());
+  const list = () => [...names.querySelectorAll('input:not([type])')].map(i => i.value.trim());
   const addName = (v = '', ph = 'Name') => {
     const row = document.createElement('div');
     row.className = 'row';
-    row.innerHTML = `<input maxlength="40" placeholder="${ph}" value="${esc(v)}"><button class="x" title="Remove">✕</button>`;
+    row.innerHTML = `<input maxlength="40" placeholder="${ph}" value="${esc(v)}"><label class="check"><input type="checkbox"> Viewer</label><button class="x" title="Remove">✕</button>`;
     row.querySelector('button').onclick = () => { row.remove(); refreshPairs(); };
     row.querySelector('input').oninput = refreshPairs;
+    row.querySelector('[type=checkbox]').onchange = refreshPairs;
     names.append(row);
     return row.querySelector('input');
   };
   const options = sel => {
     const keep = sel.value;
-    sel.innerHTML = '<option value="">Choose…</option>' + list().map((n, i) => n && `<option value="${i}">${esc(n)}</option>`).join('');
+    const viewer = [...names.querySelectorAll('[type=checkbox]')].map(c => c.checked);
+    sel.innerHTML = '<option value="">Choose…</option>' + list().map((n, i) => n && !viewer[i] && `<option value="${i}">${esc(n)}</option>`).join('');
     sel.value = keep;
   };
   function refreshPairs() { pairs.querySelectorAll('select').forEach(options); }
@@ -110,13 +113,14 @@ function home() {
   $('#pair').onclick = addPair;
   $('#go').onclick = async () => {
     const all = list();
-    const people = all.filter(Boolean);
+    const viewer = [...names.querySelectorAll('[type=checkbox]')].map(c => c.checked);
+    const people = all.map((name, i) => ({ name, viewer: viewer[i] })).filter(p => p.name);
     const index = all.map((n, i) => n ? all.slice(0, i).filter(Boolean).length : -1);
     const exclude = [...pairs.querySelectorAll('.row')]
       .map(r => [...r.querySelectorAll('select')].map(s => s.value === '' ? -1 : index[s.value]))
       .filter(([a, b]) => a >= 0 && b >= 0);
     $('#err').textContent = '';
-    if (people.length < 3) return ($('#err').textContent = 'Add at least 3 people.');
+    if (people.filter(p => !p.viewer).length < 3) return ($('#err').textContent = 'Put at least 3 people in the draw.');
     $('#go').disabled = true;
     try {
       const name = $('#name').value.trim() || 'Secret Santa';
@@ -150,14 +154,14 @@ async function admin(group, key) {
         <h2>Send links</h2>
         <ul class="people">${g.people.map(p => `
           <li data-id="${p.id}">
-            <span class="who">${esc(p.name)}<small>${p.seen ? '✓ Opened' : 'Not opened yet'}${p.hasWish ? ' · has a wish list' : ''}</small></span>
+            <span class="who">${esc(p.name)}<small>${p.viewer ? 'Viewer · ' : ''}${p.seen ? '✓ Opened' : 'Not opened yet'}${p.hasWish ? ' · has a wish list' : ''}</small></span>
             <button data-act="share">Send</button>
             <button class="ghost" data-act="copy">Copy</button>
             <button class="x" data-act="remove" title="Remove">✕</button>
           </li>`).join('')}</ul>
         <h3>Add someone</h3>
-        <div class="row"><input id="add" maxlength="40" placeholder="Name"><button id="addbtn">Add</button></div>
-        <p class="muted">Adding or removing someone redraws every name, so send everyone their link again.</p>
+        <div class="row"><input id="add" maxlength="40" placeholder="Name"><label class="check"><input type="checkbox" id="addviewer"> Viewer</label><button id="addbtn">Add</button></div>
+        <p class="muted">Adding or removing someone in the draw redraws every name, so send everyone their link again. Viewers don't change the draw.</p>
         <p class="err" id="err"></p>
       </div>
       <div class="card">
@@ -174,11 +178,11 @@ async function admin(group, key) {
       li.querySelector('[data-act=share]').onclick = () => share(linkFor(p), text);
       li.querySelector('[data-act=copy]').onclick = () => copy(linkFor(p));
       li.querySelector('[data-act=remove]').onclick = () =>
-        confirm(`Remove ${p.name}? Everyone's names will be redrawn.`) && act('/api/admin/remove', { id: p.id });
+        confirm(`Remove ${p.name}?${p.viewer ? '' : " Everyone's names will be redrawn."}`) && act('/api/admin/remove', { id: p.id }, !p.viewer);
     });
     $('#addbtn').onclick = () => {
-      const name = $('#add').value.trim();
-      if (name && confirm(`Add ${name}? Everyone's names will be redrawn.`)) act('/api/admin/add', { name });
+      const name = $('#add').value.trim(), viewer = $('#addviewer').checked;
+      if (name && (viewer || confirm(`Add ${name}? Everyone's names will be redrawn.`))) act('/api/admin/add', { name, viewer }, !viewer);
     };
     $('#redraw').onclick = () => confirm('Redraw everyone? Old links still work but show a new person.') && act('/api/admin/redraw', {});
     $('#delete').onclick = async () => {
@@ -188,8 +192,8 @@ async function admin(group, key) {
       location.hash = '';
     };
   };
-  const act = async (path, body) => {
-    try { g = await call(path, { ...auth, body }); render(); toast('Names redrawn'); }
+  const act = async (path, body, reshuffle = true) => {
+    try { g = await call(path, { ...auth, body }); render(); toast(reshuffle ? 'Names redrawn' : 'Done'); }
     catch (e) { $('#err').textContent = e.message; }
   };
   try { g = await call('/api/admin', auth); } catch (e) { return oops(e.message); }
@@ -207,7 +211,15 @@ async function me(group, key) {
   const render = () => {
     document.getElementById('sub').textContent = d.name;
     const keepWish = $('#mywish')?.value;
-    app.innerHTML = `
+    const viewer = d.me.viewer;
+    const others = d.lists.filter(l => l.name !== d.giftee?.name);
+    app.innerHTML = `${viewer ? `
+      <div class="card reveal">
+        <div class="tag">Hi ${esc(d.me.name)}</div>
+        <div class="name" style="font-size:30px">You're a viewer</div>
+        <p class="muted">You're not in the name draw. Share your wish list and browse everyone else's.</p>
+        ${facts(d)}
+      </div>` : `
       <div class="card reveal">
         <div class="tag">Hi ${esc(d.me.name)}, you're the Secret Santa for</div>
         ${opened ? `<div class="name">${esc(d.giftee.name)}</div>` : `
@@ -220,8 +232,8 @@ async function me(group, key) {
           </svg>
           <p class="muted">Tap the gift to see who</p>`}
         ${facts(d)}
-      </div>
-      ${opened ? `
+      </div>`}
+      ${opened && !viewer ? `
       <div class="card">
         <h2>${esc(d.giftee.name)}'s wish list</h2>
         ${d.giftee.wish ? `<p class="wish">${linkify(d.giftee.wish)}</p>` : `<p class="muted">${esc(d.giftee.name)} hasn't written one yet. Check back, or ask below.</p>`}
@@ -232,13 +244,18 @@ async function me(group, key) {
       </div>` : ''}
       <div class="card">
         <h2>Your wish list</h2>
-        <p class="muted" style="margin-top:0">Your Secret Santa sees this. Add ideas, sizes, links.</p>
+        <p class="muted" style="margin-top:0">Everyone in the group can see this. Add ideas, sizes, links.</p>
         <textarea id="mywish" maxlength="2000" placeholder="Wool socks (size L)&#10;A good book&#10;https://…">${esc(keepWish ?? d.me.wish)}</textarea>
         <button id="savewish" style="margin-top:8px">Save wish list</button>
-        <h3>Messages from your Secret Santa</h3>
+        ${viewer ? '' : `<h3>Messages from your Secret Santa</h3>
         <div class="msgs">${thread(d.fromSanta, 0)}</div>
-        ${d.fromSanta.length ? `<div class="row"><input id="toSanta" maxlength="500" placeholder="Reply…"><button id="sendSanta">Reply</button></div>` : ''}
+        ${d.fromSanta.length ? `<div class="row"><input id="toSanta" maxlength="500" placeholder="Reply…"><button id="sendSanta">Reply</button></div>` : ''}`}
         <p class="err" id="err"></p>
+      </div>
+      <div class="card">
+        <h2>Everyone's wish lists</h2>
+        ${others.length ? others.map(l => `<h3>${esc(l.name)}${l.viewer ? ' <span class="muted">(viewer)</span>' : ''}</h3><p class="wish">${linkify(l.wish)}</p>`).join('')
+          : '<p class="muted">Nobody else has written one yet.</p>'}
       </div>`;
 
     const gift = $('#gift');
@@ -275,7 +292,7 @@ async function me(group, key) {
     if (document.hidden || typing || !location.hash.startsWith('#me/')) return;
     try {
       const fresh = await call('/api/me', auth);
-      if (JSON.stringify([fresh.toGiftee, fresh.fromSanta, fresh.giftee]) !== JSON.stringify([d.toGiftee, d.fromSanta, d.giftee])) { d = fresh; render(); }
+      if (JSON.stringify([fresh.toGiftee, fresh.fromSanta, fresh.giftee, fresh.lists]) !== JSON.stringify([d.toGiftee, d.fromSanta, d.giftee, d.lists])) { d = fresh; render(); }
     } catch {}
   }, 30000);
 }
