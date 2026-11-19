@@ -22,12 +22,37 @@ async function call(path, { group, key, body } = {}) {
   return data;
 }
 
-// Groups this browser organizes, so the organizer can find them again.
+// Links this browser has opened ({gid, kind: 'admin'|'me', key, name}), so people can find them again.
+const same = (a, b) => a.gid === b.gid && a.kind === b.kind;
 const saved = {
-  all() { try { return JSON.parse(localStorage.getItem('santa.groups')) || []; } catch { return []; } },
-  add(g) { try { localStorage.setItem('santa.groups', JSON.stringify([g, ...this.all().filter(x => x.id !== g.id)])); } catch {} },
-  drop(id) { try { localStorage.setItem('santa.groups', JSON.stringify(this.all().filter(x => x.id !== id))); } catch {} },
+  all() {
+    try { return (JSON.parse(localStorage.getItem('santa.groups')) || []).map(l => l.admin ? { gid: l.id, kind: 'admin', key: l.admin, name: l.name } : l); }
+    catch { return []; }
+  },
+  set(list) { try { localStorage.setItem('santa.groups', JSON.stringify(list)); } catch {} },
+  add(l) { this.set([l, ...this.all().filter(x => !same(x, l))]); },
+  drop(l) { this.set(this.all().filter(x => !same(x, l))); },
 };
+// The logged-in account, if any: {email, links}.
+let account = { email: null, links: [] };
+const showAccount = () => { document.getElementById('acct').textContent = account.email ? '👤 Account' : 'Log in'; };
+async function loadAccount() {
+  try { account = await call('/api/auth/me'); } catch {}
+  account.links ||= [];
+  showAccount();
+}
+function remember(l) {
+  saved.add(l);
+  if (account.email) call('/api/auth/link', { body: l }).then(a => { account = a; }).catch(() => {});
+}
+function forget(l) {
+  saved.drop(l);
+  if (account.email) call('/api/auth/unlink', { body: l }).catch(() => {});
+}
+const allLinks = () => [...account.links, ...saved.all()].filter((l, i, a) => a.findIndex(x => same(x, l)) === i);
+const groupsCard = list => list.length ? `<div class="card"><h2>Your groups</h2><ul class="people">${list.map(l => `
+  <li><span class="who">${esc(l.name)}<small>${l.kind === 'admin' ? 'Organizer' : 'Your page'}</small></span>
+  <a href="#${l.kind}/${l.gid}/${l.key}"><button class="ghost">${l.kind === 'admin' ? 'Manage' : 'Open'}</button></a></li>`).join('')}</ul></div>` : '';
 
 const facts = g => `<ul class="facts">${[
   g.budget && `Budget: ${esc(g.budget)}`,
@@ -46,13 +71,30 @@ async function copy(text) {
   try { await navigator.clipboard.writeText(text); toast('Copied'); } catch { prompt('Copy this:', text); }
 }
 
+/* ---------- Install as an app (Android, iPhone, computer) ---------- */
+const install = {
+  prompt: null,
+  card() {
+    if (matchMedia('(display-mode: standalone)').matches || navigator.standalone) return '';
+    const how = this.prompt ? '<button id="install">📲 Install the app</button>'
+      : /iphone|ipad|ipod/i.test(navigator.userAgent) ? '<p class="muted">In Safari, tap the <b>Share</b> button, then <b>Add to Home Screen</b>.</p>'
+      : '<p class="muted">Open the browser menu (⋮) and tap <b>Install app</b> or <b>Add to Home screen</b>.</p>';
+    return `<div class="card"><h2>Get the app</h2><p class="muted" style="margin-top:0">Put Secret Santa on your home screen. It opens full screen, like any app.</p>${how}</div>`;
+  },
+  bind() {
+    const b = $('#install');
+    if (b) b.onclick = async () => { this.prompt.prompt(); await this.prompt.userChoice; this.prompt = null; route(); };
+  },
+};
+addEventListener('beforeinstallprompt', e => { e.preventDefault(); install.prompt = e; if (!location.hash) route(); });
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+
 /* ---------- Create a group ---------- */
 function home() {
   document.getElementById('sub').textContent = 'Draw names, share wish lists, keep the secret.';
-  const mine = saved.all();
   app.innerHTML = `
-    ${mine.length ? `<div class="card"><h2>Your groups</h2><ul class="people">${mine.map(g => `
-      <li><span class="who">${esc(g.name)}</span><a href="#admin/${g.id}/${g.admin}"><button class="ghost">Manage</button></a></li>`).join('')}</ul></div>` : ''}
+    ${groupsCard(allLinks())}
+    ${install.card()}
     <div class="card">
       <h2>Start a gift exchange</h2>
       <ol class="steps muted">
@@ -79,6 +121,7 @@ function home() {
       <button class="big" id="go">Create &amp; draw names</button>
     </div>`;
 
+  install.bind();
   const names = $('#names'), pairs = $('#pairs');
   const list = () => [...names.querySelectorAll('input:not([type])')].map(i => i.value.trim());
   const addName = (v = '', ph = 'Name') => {
@@ -125,7 +168,7 @@ function home() {
     try {
       const name = $('#name').value.trim() || 'Secret Santa';
       const g = await call('/api/groups', { body: { name, people, exclude, budget: $('#budget').value, date: $('#date').value, note: $('#note').value } });
-      saved.add({ id: g.id, admin: g.admin, name });
+      remember({ gid: g.id, kind: 'admin', key: g.admin, name });
       location.hash = `admin/${g.id}/${g.admin}`;
     } catch (e) {
       $('#err').textContent = e.message;
@@ -143,6 +186,8 @@ async function admin(group, key) {
     const base = `${location.origin}/`;
     const linkFor = p => `${base}#me/${group}/${p.id}.${p.key}`;
     const opened = g.people.filter(p => p.seen).length;
+    const nameOf = id => g.people.find(p => p.id === id)?.name || '?';
+    const pick = label => `<option value="">${label}</option>` + g.people.filter(p => !p.viewer).map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
     app.innerHTML = `
       <div class="card">
         <h2>Names are drawn 🎉</h2>
@@ -165,6 +210,14 @@ async function admin(group, key) {
         <p class="err" id="err"></p>
       </div>
       <div class="card">
+        <h2>Choose for someone</h2>
+        <p class="muted" style="margin-top:0">Pick who someone gets. Only they and one other person swap, nobody else's match changes, and nobody is told it was chosen.</p>
+        <div class="row"><select id="fixA">${pick('Who gives…')}</select><span class="muted">gets</span><select id="fixB">${pick('Who gets…')}</select></div>
+        <button id="fixbtn">Set</button>
+        ${g.fixed.length ? `<ul class="people" style="margin-top:12px">${g.fixed.map(([a, b]) => `
+          <li><span class="who">${esc(nameOf(a))} → ${esc(nameOf(b))}<small>Chosen by you</small></span><button class="x" data-unfix="${a}" title="Remove">✕</button></li>`).join('')}</ul>` : ''}
+      </div>
+      <div class="card">
         <h2>Options</h2>
         <div class="row" style="flex-wrap:wrap">
           <button class="ghost" id="redraw">Redraw all names</button>
@@ -172,7 +225,7 @@ async function admin(group, key) {
         </div>
       </div>`;
 
-    app.querySelectorAll('.people li').forEach(li => {
+    app.querySelectorAll('.people li[data-id]').forEach(li => {
       const p = g.people.find(x => x.id === li.dataset.id);
       const text = `Hi ${p.name}! Here's your private Secret Santa link for ${g.name}. Don't share it:`;
       li.querySelector('[data-act=share]').onclick = () => share(linkFor(p), text);
@@ -184,20 +237,26 @@ async function admin(group, key) {
       const name = $('#add').value.trim(), viewer = $('#addviewer').checked;
       if (name && (viewer || confirm(`Add ${name}? Everyone's names will be redrawn.`))) act('/api/admin/add', { name, viewer }, !viewer);
     };
+    $('#fixbtn').onclick = () => {
+      const giver = $('#fixA').value, receiver = $('#fixB').value;
+      if (!giver || !receiver) return toast('Choose both people.');
+      act('/api/admin/fix', { giver, receiver });
+    };
+    app.querySelectorAll('[data-unfix]').forEach(b => b.onclick = () => act('/api/admin/fix', { giver: b.dataset.unfix }));
     $('#redraw').onclick = () => confirm('Redraw everyone? Old links still work but show a new person.') && act('/api/admin/redraw', {});
     $('#delete').onclick = async () => {
       if (!confirm(`Delete "${g.name}" for everyone? This can't be undone.`)) return;
       await call('/api/admin/delete', { ...auth, body: {} });
-      saved.drop(group);
+      forget({ gid: group, kind: 'admin' });
       location.hash = '';
     };
   };
-  const act = async (path, body, reshuffle = true) => {
-    try { g = await call(path, { ...auth, body }); render(); toast(reshuffle ? 'Names redrawn' : 'Done'); }
-    catch (e) { $('#err').textContent = e.message; }
+  const act = async (path, body) => {
+    try { g = await call(path, { ...auth, body }); render(); toast(g.redrawn ? 'Names redrawn: send everyone their link again' : 'Done'); }
+    catch (e) { toast(e.message); }
   };
   try { g = await call('/api/admin', auth); } catch (e) { return oops(e.message); }
-  saved.add({ id: group, admin: key, name: g.name });
+  remember({ gid: group, kind: 'admin', key, name: g.name });
   render();
 }
 
@@ -243,7 +302,7 @@ const itemList = (items, kind, empty) => items.length
 
 async function me(group, key) {
   const auth = { group, key };
-  let d, opened = false, tab, who = 0, photo = null, paste = null;
+  let d, opened = false, showing = false, tab, who = 0, photo = null, paste = null;
   const shop = { list: { q: '', results: null }, person: { q: '', results: null } };
   const store = (k, v) => { try { v === undefined ? (v = sessionStorage.getItem(k)) : sessionStorage.setItem(k, v); } catch {} return v; };
   const readKey = `santa.read.${group}`;
@@ -252,7 +311,7 @@ async function me(group, key) {
   const thread = (msgs, mineFlag) => msgs.length
     ? msgs.map(m => `<div class="msg ${m.s === mineFlag ? 'mine' : ''}">${esc(m.x)}</div>`).join('')
     : '<p class="muted">No messages yet.</p>';
-  const giftBox = `
+  const giftBox = label => `
     <svg class="gift" id="gift" viewBox="0 0 100 100" role="button" aria-label="Open to reveal">
       <rect x="14" y="44" width="72" height="50" rx="4" fill="#b3262f"/>
       <rect x="45" y="44" width="10" height="50" fill="#c99a3b"/>
@@ -260,7 +319,7 @@ async function me(group, key) {
       <rect x="45" y="30" width="10" height="16" fill="#c99a3b"/>
       <path d="M50 30 C 34 10, 22 26, 50 30 C 78 26, 66 10, 50 30" fill="none" stroke="#c99a3b" stroke-width="5"/></g>
     </svg>
-    <p class="muted">Tap the gift to see who</p>`;
+    <p class="muted">${label}</p>`;
   // Amazon search box. On My list results get "+ Add"; on My person they link to the shop.
   const search = (where, title, hint) => {
     const s = shop[where];
@@ -278,18 +337,23 @@ async function me(group, key) {
   const pages = {
     person: () => `
       <div class="card reveal">
-        <div class="tag">Hi ${esc(d.me.name)}, you're the Secret Santa for</div>
-        ${opened ? `<div class="name">${esc(d.giftee.name)}</div>` : giftBox}
+        ${showing ? `<div class="tag">You're the Secret Santa for</div>
+          <div class="name">${esc(d.giftee.name)}</div>
+          <button class="ghost" id="hide">Close the present</button>
+          <p class="muted">It closes by itself in a few seconds.</p>`
+        : `<div class="tag">Hi ${esc(d.me.name)}, ${opened ? 'your person is in the present' : "you're a Secret Santa"}</div>
+          ${giftBox(opened ? 'Tap to peek again' : 'Tap the gift to see who')}`}
         ${facts(d)}
       </div>
       ${opened ? `<div class="card">
-        <h2>${esc(d.giftee.name)}'s wish list</h2>
-        ${itemList(d.giftee.items, 'theirs', `${esc(d.giftee.name)} hasn't added anything yet. Check back, or ask in Messages.`)}
+        <h2>Your person's wish list</h2>
+        ${itemList(d.giftee.items, 'theirs', "They haven't added anything yet. Check back, or ask in Messages.")}
       </div>
-      ${search('person', 'Find a gift', 'Search Amazon for gift ideas')}` : ''}`,
+      ${search('person', 'Find a gift', 'Search Amazon for gift ideas')}` : ''}
+      ${install.card()}`,
     messages: () => `
       ${opened ? `<div class="card">
-        <h2>Ask ${esc(d.giftee.name)}</h2>
+        <h2>Ask your person</h2>
         <p class="muted" style="margin-top:0">They'll see it as from "your Secret Santa".</p>
         <div class="msgs">${thread(d.toGiftee, 1)}</div>
         <div class="row"><input id="toGiftee" maxlength="500" placeholder="What size do you wear?"><button id="sendGiftee">Send</button></div>
@@ -345,18 +409,26 @@ async function me(group, key) {
     app.innerHTML = `
       ${d.me.viewer && tab === 'list' ? `<div class="card reveal"><div class="tag">Hi ${esc(d.me.name)}</div>
         <p class="muted">You're a viewer: not in the name draw. Share your list and browse everyone else's.</p>${facts(d)}</div>` : ''}
+      ${d.me.viewer && tab === 'list' ? install.card() : ''}
       ${pages[tab]()}
       <nav class="tabs">${tabs(d).map(([id, icon, label]) =>
         `<button class="${id === tab ? 'on' : ''}" data-tab="${id}"><span class="i">${icon}</span>${label}${id === 'messages' && n ? `<b class="badge">${n}</b>` : ''}</button>`).join('')}</nav>`;
 
-    app.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { tab = store(`santa.tab.${group}`, b.dataset.tab); render(); scrollTo(0, 0); });
+    app.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { tab = store(`santa.tab.${group}`, b.dataset.tab); showing = false; render(); scrollTo(0, 0); });
+    install.bind();
     app.querySelectorAll('[data-who]').forEach(b => b.onclick = () => { who = +b.dataset.who; render(); });
     const err = msg => { const e = $('#err'); e ? (e.textContent = msg) : toast(msg); };
     const gift = $('#gift');
     if (gift) gift.onclick = () => {
       gift.classList.add('open');
-      setTimeout(() => { opened = true; store(`santa.open.${group}`, 1); render(); }, 450);
+      setTimeout(() => {
+        opened = showing = true; store(`santa.open.${group}`, 1); render();
+        clearTimeout(me.close);
+        me.close = setTimeout(() => { if (showing) { showing = false; render(); } }, 10000);
+      }, 450);
     };
+    const hide = $('#hide');
+    if (hide) hide.onclick = () => { showing = false; render(); };
     const sender = (input, btn, to) => {
       const el = $(input);
       if (!el) return;
@@ -428,6 +500,7 @@ async function me(group, key) {
   opened = !!store(`santa.open.${group}`);
   tab = store(`santa.tab.${group}`);
   try { d = await call('/api/me', auth); } catch (e) { return oops(e.message); }
+  remember({ gid: group, kind: 'me', key, name: `${d.name} · ${d.me.name}` });
   render();
   // Pick up new messages and list changes while the page is open, unless the person is typing.
   clearInterval(me.timer);
@@ -441,6 +514,44 @@ async function me(group, key) {
   }, 30000);
 }
 
+/* ---------- Account: email + password ---------- */
+function accountPage(mode = 'login') {
+  document.getElementById('sub').textContent = 'Your account';
+  if (account.email) {
+    app.innerHTML = `
+      <div class="card"><h2>Signed in</h2><p>${esc(account.email)}</p>
+        <p class="muted">Every group you create or link you open while signed in is saved here, on any phone or computer.</p>
+        <button class="ghost" id="out">Log out</button></div>
+      ${groupsCard(account.links) || '<div class="card"><p class="muted">No groups yet. Open your private link or create a group and it shows up here.</p></div>'}`;
+    $('#out').onclick = async () => { account = await call('/api/auth/logout', { body: {} }); account.links = []; showAccount(); location.hash = ''; };
+    return;
+  }
+  const signup = mode === 'signup';
+  app.innerHTML = `
+    <div class="card">
+      <h2>${signup ? 'Create an account' : 'Log in'}</h2>
+      <p class="muted" style="margin-top:0">An account keeps your groups and private links, so you can open them on any phone or computer.</p>
+      <form id="f">
+        <label for="email">Email</label><input id="email" type="email" autocomplete="email" required>
+        <label for="pw">Password</label><input id="pw" type="password" autocomplete="${signup ? 'new-password' : 'current-password'}" ${signup ? 'minlength="8" placeholder="At least 8 characters"' : ''} required>
+        <p class="err" id="err"></p>
+        <button class="big" style="margin-top:4px">${signup ? 'Create account' : 'Log in'}</button>
+      </form>
+      <p class="muted" style="text-align:center">${signup ? 'Have an account? <a href="#account">Log in</a>' : 'New here? <a href="#account/signup">Create an account</a>'}</p>
+    </div>`;
+  $('#f').onsubmit = async e => {
+    e.preventDefault();
+    try {
+      await call(`/api/auth/${signup ? 'signup' : 'login'}`, { body: { email: $('#email').value, password: $('#pw').value } });
+      await loadAccount();
+      // Bring along the links this device already knew about.
+      for (const l of saved.all()) if (!account.links.some(x => same(x, l))) account = await call('/api/auth/link', { body: l }).catch(() => account);
+      accountPage();
+      toast(signup ? 'Account created' : 'Logged in');
+    } catch (err) { $('#err').textContent = err.message; }
+  };
+}
+
 function oops(msg) {
   app.innerHTML = `<div class="card"><h2>Hmm.</h2><p>${esc(msg)}</p><a href="#"><button class="ghost">Start a new group</button></a></div>`;
 }
@@ -448,9 +559,10 @@ function oops(msg) {
 function route() {
   const [view, group, key] = location.hash.slice(1).split('/');
   window.scrollTo(0, 0);
-  if (view === 'admin' && key) admin(group, key);
+  if (view === 'account') accountPage(group);
+  else if (view === 'admin' && key) admin(group, key);
   else if (view === 'me' && key) me(group, key);
   else home();
 }
 window.addEventListener('hashchange', route);
-route();
+loadAccount().finally(route);

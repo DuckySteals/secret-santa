@@ -1,5 +1,6 @@
 import { preview } from '../src/preview.js';
 import { amazon } from '../src/shop.js';
+import { auth } from '../src/auth.js';
 // Secret Santa: organizers create a group, the worker draws names, and each
 // person opens a private link to see who they're buying for.
 const MAX_PEOPLE = 100;
@@ -22,17 +23,21 @@ const save = (env, g) => env.DB.prepare('INSERT OR REPLACE INTO groups (id, data
   .bind(g.id, JSON.stringify(g), g.created).run();
 
 // Random assignment: nobody draws themselves or someone in their "no-match" pairs.
-function draw(people, exclude) {
-  const banned = new Set(exclude.flatMap(([a, b]) => [`${a}>${b}`, `${b}>${a}`]));
+// Pairs the organizer chose by hand (fixed) are kept; everyone else is shuffled.
+const banned = (g, a, b) => g.exclude.some(p => p.includes(a) && p.includes(b));
+function draw(people, g) {
   const ids = people.map(p => p.id);
+  const pinned = Object.entries(g.fixed || {}).filter(([a, b]) => ids.includes(a) && ids.includes(b));
+  const givers = ids.filter(id => !pinned.some(([a]) => a === id));
+  const pool = ids.filter(id => !pinned.some(([, b]) => b === id));
   for (let attempt = 0; attempt < 2000; attempt++) {
-    const order = [...ids];
+    const order = [...pool];
     for (let i = order.length - 1; i > 0; i--) {
       const j = crypto.getRandomValues(new Uint32Array(1))[0] % (i + 1);
       [order[i], order[j]] = [order[j], order[i]];
     }
-    if (ids.every((id, i) => id !== order[i] && !banned.has(`${id}>${order[i]}`)))
-      return Object.fromEntries(ids.map((id, i) => [id, order[i]]));
+    if (givers.every((id, i) => id !== order[i] && !banned(g, id, order[i])))
+      return Object.fromEntries([...pinned, ...givers.map((id, i) => [id, order[i]])]);
   }
   return null;
 }
@@ -41,8 +46,8 @@ function draw(people, exclude) {
 function redraw(g) {
   const drawn = g.people.filter(p => !p.viewer);
   if (drawn.length < 3) return 'You need at least 3 people in the draw.';
-  const match = draw(drawn, g.exclude);
-  if (!match) return "Those no-match pairs make a draw impossible. Remove one and try again.";
+  const match = draw(drawn, g);
+  if (!match) return "Those no-match pairs and chosen pairs make a draw impossible. Remove one and try again.";
   g.match = match;
   g.msgs = {};
   return null;
@@ -88,6 +93,14 @@ async function api(req, env, path) {
     return json({ id: g.id, admin: g.admin });
   }
 
+  if (path.startsWith('/api/auth/')) return auth(req, env, path, body, async (id, kind, k) => {
+    const grp = await load(env, id);
+    if (!grp) return null;
+    if (kind === 'admin') return grp.admin === k ? grp.name : null;
+    const p = grp.people.find(x => `${x.id}.${x.key}` === k);
+    return p ? `${grp.name} · ${p.name}` : null;
+  });
+
   if (path.startsWith('/api/img/')) {
     const row = await env.DB.prepare('SELECT type, data FROM images WHERE id = ?').bind(path.slice(9)).first();
     if (!row) return fail('Not found', 404);
@@ -112,6 +125,31 @@ async function api(req, env, path) {
       reshuffle = !g.people.find(p => p.id === body.id)?.viewer;
       g.people = g.people.filter(p => p.id !== body.id);
       g.exclude = g.exclude.filter(pair => !pair.includes(body.id));
+      for (const [a, b] of Object.entries(g.fixed || {})) if (a === body.id || b === body.id) delete g.fixed[a];
+    } else if (path === '/api/admin/fix' && req.method === 'POST') {
+      // The organizer picks who someone gets. Only this giver and one other person swap,
+      // so nobody else's match changes and nobody is told.
+      g.fixed ||= {};
+      const inDraw = id => g.people.some(p => p.id === id && !p.viewer);
+      const nameOf = id => g.people.find(p => p.id === id)?.name;
+      const a = body.giver, b = body.receiver;
+      if (!inDraw(a)) return fail('Choose who gives.');
+      reshuffle = false;
+      if (!b) delete g.fixed[a];
+      else {
+        if (!inDraw(b) || a === b) return fail('Choose someone else for them to get.');
+        const taken = Object.keys(g.fixed).find(x => g.fixed[x] === b && x !== a);
+        if (taken) return fail(`${nameOf(b)} is already chosen for ${nameOf(taken)}.`);
+        if (banned(g, a, b)) return fail(`${nameOf(a)} and ${nameOf(b)} are a no-match pair.`);
+        g.fixed[a] = b;
+        const c = Object.keys(g.match).find(id => g.match[id] === b), x = g.match[a];
+        if (c !== a) {
+          if (c !== x && !banned(g, c, x) && !g.fixed[c]) {
+            g.match[a] = b; g.match[c] = x;
+            delete g.msgs?.[a]; delete g.msgs?.[c];
+          } else reshuffle = true;
+        }
+      }
     } else if (path === '/api/admin/redraw' && req.method === 'POST') {
       // fall through to redraw below
     } else if (path === '/api/admin/delete' && req.method === 'POST') {
@@ -127,7 +165,10 @@ async function api(req, env, path) {
       await save(env, g);
     }
     // The organizer sees links and who has looked, never who drew whom.
-    return json({ ...info(g), people: g.people.map(p => ({ id: p.id, key: p.key, name: p.name, seen: p.seen, viewer: !!p.viewer, hasWish: items(p).length > 0 })) });
+    return json({
+      ...info(g), redrawn: req.method === 'POST' && reshuffle, fixed: Object.entries(g.fixed || {}),
+      people: g.people.map(p => ({ id: p.id, key: p.key, name: p.name, seen: p.seen, viewer: !!p.viewer, hasWish: items(p).length > 0 })),
+    });
   }
 
   const [pid, secret] = key.split('.');
