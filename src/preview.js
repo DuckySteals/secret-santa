@@ -3,13 +3,13 @@
 // then a real headless browser for shops that block plain requests.
 import puppeteer from '@cloudflare/puppeteer';
 
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36';
+export const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36';
 const BLOCKED = /robot or human|access denied|captcha|attention required|just a moment|error page|page not found|^\d+\.p$/i;
 
 const tidy = t => unescape(t || '').replace(/\s+/g, ' ').replace(/^Amazon\.com:\s*/, '')
   .replace(/\s*[:|–-]\s*(Target|Walmart\.com|Amazon\.com.*|Best Buy|The Home Depot|Etsy|eBay)$/i, '').trim().slice(0, 120);
 const ENT = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
-const unescape = s => s && s.replace(/&(#x[\da-f]+|#\d+|\w+);/gi, (m, e) => e[0] === '#' ? String.fromCodePoint(e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : +e.slice(1)) : ENT[e.toLowerCase()] ?? m);
+export const unescape = s => s && s.replace(/&(#x[\da-f]+|#\d+|\w+);/gi, (m, e) => e[0] === '#' ? String.fromCodePoint(e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : +e.slice(1)) : ENT[e.toLowerCase()] ?? m);
 const money = p => p && (/^\d/.test(String(p)) ? `$${p}` : String(p)).slice(0, 20);
 
 // Pull the best image/title/price out of a page's HTML stream.

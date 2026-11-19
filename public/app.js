@@ -218,28 +218,33 @@ const pickPhoto = () => new Promise(resolve => {
   input.click();
 });
 
-function itemCard(it, mine) {
+// One picture card. kind: 'mine' (edit), 'theirs' (shop), 'add' (Amazon result to add).
+function itemCard(it, kind, i) {
   const open = it.u ? `href="${esc(it.u)}" target="_blank" rel="noopener"` : '';
   const pic = it.img
     ? `<img src="${esc(it.img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🎁'}))">`
     : '<span>🎁</span>';
-  return `<div class="item" data-id="${it.id}">
+  const site = host(it.u);
+  return `<div class="item" data-id="${it.id || ''}">
     <a class="pic" ${open}>${pic}</a>
     <div class="info">
       ${it.u ? `<a class="t" ${open}>${esc(it.t)}</a>` : `<span class="t">${esc(it.t)}</span>`}
-      <div class="meta">${[it.u && host(it.u), it.price].filter(Boolean).map(esc).join(' · ')}</div>
+      ${it.price ? `<div class="price">${esc(it.price)}</div>` : ''}
       ${it.n ? `<div class="note">${esc(it.n)}</div>` : ''}
-      ${mine ? `<div class="acts"><button class="ghost" data-act="photo">${it.img ? 'Change photo' : 'Add photo'}</button><button class="ghost" data-act="del">Remove</button></div>` : ''}
     </div>
+    ${kind === 'mine' ? `<div class="acts"><button class="ghost" data-act="photo" aria-label="${it.img ? 'Change' : 'Add'} photo">📷</button><button class="ghost" data-act="del">Remove</button></div>`
+      : kind === 'add' ? `<button class="add" data-add="${i}">+ Add to list</button>`
+      : it.u ? `<a class="buy" ${open}>${site === 'amazon.com' ? 'View on Amazon' : `View at ${esc(site)}`}</a>` : ''}
   </div>`;
 }
-const itemList = (items, mine, empty) => items.length
-  ? `<div class="items">${items.map(it => itemCard(it, mine)).join('')}</div>`
+const itemList = (items, kind, empty) => items.length
+  ? `<div class="items">${items.map((it, i) => itemCard(it, kind, i)).join('')}</div>`
   : `<p class="muted">${empty}</p>`;
 
 async function me(group, key) {
   const auth = { group, key };
-  let d, opened = false, tab;
+  let d, opened = false, tab, who = 0, photo = null, paste = null;
+  const shop = { list: { q: '', results: null }, person: { q: '', results: null } };
   const store = (k, v) => { try { v === undefined ? (v = sessionStorage.getItem(k)) : sessionStorage.setItem(k, v); } catch {} return v; };
   const readKey = `santa.read.${group}`;
   const incoming = () => d.toGiftee.filter(m => m.s === 0).length + d.fromSanta.filter(m => m.s === 1).length;
@@ -256,6 +261,19 @@ async function me(group, key) {
       <path d="M50 30 C 34 10, 22 26, 50 30 C 78 26, 66 10, 50 30" fill="none" stroke="#c99a3b" stroke-width="5"/></g>
     </svg>
     <p class="muted">Tap the gift to see who</p>`;
+  // Amazon search box. On My list results get "+ Add"; on My person they link to the shop.
+  const search = (where, title, hint) => {
+    const s = shop[where];
+    return `<div class="card">
+      <h2>${title}</h2>
+      <form class="search" data-shop="${where}"><input type="search" name="q" value="${esc(s.q)}" placeholder="${hint}" enterkeyhint="search"><button aria-label="Search Amazon">🔍</button></form>
+      ${s.results === 'busy' ? '<p class="muted">Searching Amazon…</p>'
+        : s.results ? itemList(s.results, where === 'list' ? 'add' : 'theirs', "Amazon didn't send results this time.") : ''}
+      ${s.q && s.results !== 'busy' ? `<a class="more" href="https://www.amazon.com/s?k=${encodeURIComponent(s.q)}" target="_blank" rel="noopener">See results on Amazon ↗</a>
+        ${where === 'list' ? '<p class="muted" style="margin:6px 0 0">Found something there? Copy its link and paste it below.</p>' : ''}` : ''}
+    </div>`;
+  };
+  const initial = n => esc([...n.trim()][0] || '?').toUpperCase();
 
   const pages = {
     person: () => `
@@ -266,8 +284,9 @@ async function me(group, key) {
       </div>
       ${opened ? `<div class="card">
         <h2>${esc(d.giftee.name)}'s wish list</h2>
-        ${itemList(d.giftee.items, false, `${esc(d.giftee.name)} hasn't added anything yet. Check back, or ask in Messages.`)}
-      </div>` : ''}`,
+        ${itemList(d.giftee.items, 'theirs', `${esc(d.giftee.name)} hasn't added anything yet. Check back, or ask in Messages.`)}
+      </div>
+      ${search('person', 'Find a gift', 'Search Amazon for gift ideas')}` : ''}`,
     messages: () => `
       ${opened ? `<div class="card">
         <h2>Ask ${esc(d.giftee.name)}</h2>
@@ -282,49 +301,56 @@ async function me(group, key) {
       </div>`,
     list: () => `
       <div class="card">
-        <h2>Add to your list</h2>
-        <p class="muted" style="margin-top:0">Paste a link and the picture and name fill in. Everyone in the group can see your list.</p>
-        <label for="addUrl">Link</label>
-        <input id="addUrl" type="url" inputmode="url" placeholder="https://www.amazon.com/…">
-        <label for="addName">Name <span class="muted">(optional with a link)</span></label>
-        <input id="addName" maxlength="120" placeholder="Wool socks">
-        <label for="addNote">Note <span class="muted">(size, color…)</span></label>
-        <input id="addNote" maxlength="300" placeholder="Size L, any dark color">
-        <div class="row" style="margin-top:12px">
-          <button class="ghost" id="addPhoto">📷 Add photo</button>
-          <span class="muted" id="photoState"></span>
-        </div>
-        <button class="big" id="addItem" style="margin-top:8px">Add to list</button>
-        <p class="err" id="err"></p>
+        <h2>My wish list${d.me.items.length ? ` <span class="count">${d.me.items.length}</span>` : ''}</h2>
+        ${itemList(d.me.items, 'mine', 'Nothing yet. Search Amazon or paste a link below.')}
       </div>
+      ${search('list', 'Add gifts', 'Search Amazon')}
       <div class="card">
-        <h2>Your list</h2>
-        ${itemList(d.me.items, true, 'Nothing yet. Add your first idea above.')}
+        <details${paste ?? !shop.list.results ? ' open' : ''}>
+          <summary>Paste a link or write your own</summary>
+          <label for="addUrl">Link from any shop</label>
+          <input id="addUrl" type="url" inputmode="url" placeholder="https://…">
+          <label for="addName">Name <span class="muted">(optional with a link)</span></label>
+          <input id="addName" maxlength="120" placeholder="Wool socks">
+          <label for="addNote">Note <span class="muted">(size, color…)</span></label>
+          <input id="addNote" maxlength="300" placeholder="Size L, any dark color">
+          <div class="row" style="margin-top:12px">
+            <button class="ghost" id="addPhoto">📷 Add photo</button>
+            <span class="muted" id="photoState">${photo ? '✓ Photo added' : ''}</span>
+          </div>
+          <button class="big" id="addItem" style="margin-top:8px">Add to list</button>
+          <p class="err" id="err"></p>
+        </details>
       </div>`,
-    everyone: () => `
-      ${d.lists.map(l => `<div class="card">
-        <h2>${esc(l.name)}${l.viewer ? ' <span class="muted" style="font-size:15px">(viewer)</span>' : ''}</h2>
-        ${itemList(l.items, false, 'Nothing added yet.')}
-      </div>`).join('') || '<div class="card"><p class="muted">Nobody else is in this group yet.</p></div>'}`,
+    everyone: () => {
+      if (!d.lists.length) return '<div class="card"><p class="muted">Nobody else is in this group yet.</p></div>';
+      const l = d.lists[who] || d.lists[(who = 0)];
+      return `<div class="who">${d.lists.map((p, i) => `<button class="${i === who ? 'on' : ''}" data-who="${i}">
+          <span class="av">${initial(p.name)}</span><span class="nm">${esc(p.name)}</span><small>${p.viewer ? 'viewer' : `${p.items.length} item${p.items.length === 1 ? '' : 's'}`}</small></button>`).join('')}</div>
+        <div class="card">
+          <h2>${esc(l.name)}'s wish list</h2>
+          ${itemList(l.items, 'theirs', 'Nothing added yet.')}
+        </div>`;
+    },
   };
   const tabs = d0 => d0.me.viewer
     ? [['list', '📝', 'My list'], ['everyone', '👥', 'Everyone']]
     : [['person', '🎁', 'My person'], ['messages', '💬', 'Messages'], ['list', '📝', 'My list'], ['everyone', '👥', 'Everyone']];
 
-  let photo = null;
   const render = () => {
     document.getElementById('sub').textContent = d.name;
     if (!tabs(d).some(([id]) => id === tab)) tab = tabs(d)[0][0];
     if (tab === 'messages') try { localStorage.setItem(readKey, incoming()); } catch {}
     const n = unread();
     app.innerHTML = `
-      <nav class="tabs">${tabs(d).map(([id, icon, label]) =>
-        `<button class="${id === tab ? 'on' : ''}" data-tab="${id}"><span class="i">${icon}</span>${label}${id === 'messages' && n ? `<b class="badge">${n}</b>` : ''}</button>`).join('')}</nav>
       ${d.me.viewer && tab === 'list' ? `<div class="card reveal"><div class="tag">Hi ${esc(d.me.name)}</div>
         <p class="muted">You're a viewer: not in the name draw. Share your list and browse everyone else's.</p>${facts(d)}</div>` : ''}
-      ${pages[tab]()}`;
+      ${pages[tab]()}
+      <nav class="tabs">${tabs(d).map(([id, icon, label]) =>
+        `<button class="${id === tab ? 'on' : ''}" data-tab="${id}"><span class="i">${icon}</span>${label}${id === 'messages' && n ? `<b class="badge">${n}</b>` : ''}</button>`).join('')}</nav>`;
 
     app.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { tab = store(`santa.tab.${group}`, b.dataset.tab); render(); scrollTo(0, 0); });
+    app.querySelectorAll('[data-who]').forEach(b => b.onclick = () => { who = +b.dataset.who; render(); });
     const err = msg => { const e = $('#err'); e ? (e.textContent = msg) : toast(msg); };
     const gift = $('#gift');
     if (gift) gift.onclick = () => {
@@ -346,7 +372,28 @@ async function me(group, key) {
     sender('#toSanta', '#sendSanta', 'santa');
     app.querySelectorAll('.msgs').forEach(m => { m.scrollTop = m.scrollHeight; });
 
+    app.querySelectorAll('[data-shop]').forEach(f => f.onsubmit = async e => {
+      e.preventDefault();
+      const s = shop[f.dataset.shop];
+      s.q = f.q.value.trim();
+      if (!s.q) return;
+      f.q.blur();
+      s.results = 'busy'; render();
+      try { s.results = (await call(`/api/me/shop?q=${encodeURIComponent(s.q)}`, auth)).results; }
+      catch (e) { s.results = null; toast(e.message); }
+      render();
+    });
+    app.querySelectorAll('[data-add]').forEach(b => b.onclick = async () => {
+      const r = shop.list.results[b.dataset.add];
+      b.disabled = true; b.textContent = 'Adding…';
+      try { d = await call('/api/me/item', { ...auth, body: r }); r.added = true; toast('Added to your list'); }
+      catch (e) { toast(e.message); }
+      render();
+    });
+    shop.list.results?.forEach?.((r, i) => { if (r.added) { const b = app.querySelector(`[data-add="${i}"]`); if (b) { b.disabled = true; b.textContent = '✓ Added'; } } });
+
     if (tab === 'list') {
+      $('summary').onclick = () => { paste = !$('details').open; };
       $('#addPhoto').onclick = async () => {
         photo = await pickPhoto().catch(() => null);
         $('#photoState').textContent = photo ? '✓ Photo added' : '';
@@ -369,7 +416,7 @@ async function me(group, key) {
           } else {
             const p = await pickPhoto();
             if (!p) return;
-            b.textContent = 'Uploading…';
+            b.textContent = '…';
             d = await call('/api/me/item/photo', { ...auth, body: { id, photo: p } });
           }
           render();

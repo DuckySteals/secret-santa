@@ -1,4 +1,5 @@
 import { preview } from '../src/preview.js';
+import { amazon } from '../src/shop.js';
 // Secret Santa: organizers create a group, the worker draws names, and each
 // person opens a private link to see who they're buying for.
 const MAX_PEOPLE = 100;
@@ -136,6 +137,10 @@ async function api(req, env, path) {
   const santaId = Object.keys(g.match).find(id => g.match[id] === me.id);
   g.msgs ||= {};
 
+  if (path === '/api/me/shop') {
+    const q = clip(new URL(req.url).searchParams.get('q'), 100);
+    return json({ results: q ? await amazon(q).catch(() => []) : [] });
+  }
   if (path === '/api/me/item' && req.method === 'POST') {
     let url = clip(body.u, 1000);
     if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
@@ -143,7 +148,9 @@ async function api(req, env, path) {
     if (!url && !clip(body.t)) return fail('Add a name or a link.');
     if (items(me).length >= 50) return fail('Up to 50 items.');
     const photo = body.photo && await savePhoto(env, g.id, body.photo);
-    const p = url ? await preview(url, env) : {};
+    // Picked from the Amazon search: picture and price came with it.
+    const picked = /^https:\/\/m\.media-amazon\.com\/images\//.test(body.img || '') && clip(body.t) && { img: body.img, price: clip(body.price, 20) };
+    const p = picked || (url ? await preview(url, env) : {});
     me.items.push({ id: rand(4), t: clip(body.t, 120) || p.title || new URL(url).hostname.replace(/^www\./, ''), u: url, img: photo || p.img, price: clip(body.price, 20) || p.price, n: clip(body.n, 300) });
   } else if (path === '/api/me/item/photo' && req.method === 'POST') {
     const item = items(me).find(i => i.id === body.id);

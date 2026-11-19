@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Secret Santa</title>
 <meta name="description" content="Draw names for a gift exchange. Everyone gets a private link with their match and wish list.">
 <meta name="theme-color" content="#14382b">
@@ -65,23 +65,47 @@
   .msg.mine { align-self: flex-end; background: var(--green); color: #fff; }
   .steps { margin: 0; padding-left: 20px; }
   .steps li { margin: 4px 0; }
-  .tabs { position: sticky; top: 8px; z-index: 5; display: flex; gap: 4px; padding: 4px; margin-bottom: 16px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 4px 14px #14382b1a; }
-  .tabs button { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 2px; font-size: 12px; background: transparent; color: var(--muted); border-radius: 10px; white-space: nowrap; }
-  .tabs .i { font-size: 20px; line-height: 1; }
-  .tabs button.on { background: var(--green); color: #fff; }
-  .badge { position: absolute; top: 4px; left: calc(50% + 8px); min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--red); color: #fff; font-size: 11px; line-height: 18px; }
-  .items { display: grid; gap: 12px; }
-  .item { display: flex; gap: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
-  .pic { flex: 0 0 96px; height: 96px; border-radius: 10px; overflow: hidden; background: #fff; border: 1px solid var(--line); display: grid; place-items: center; font-size: 34px; text-decoration: none; }
+  /* Bottom tab bar, like a phone app. */
+  .tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; display: flex; justify-content: center; background: var(--card); border-top: 1px solid var(--line); box-shadow: 0 -4px 14px #14382b14; padding: 4px 4px calc(4px + env(safe-area-inset-bottom)); }
+  .tabs button { position: relative; flex: 1; max-width: 140px; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 2px; font-size: 11px; background: transparent; color: var(--muted); border-radius: 10px; white-space: nowrap; }
+  .tabs .i { font-size: 22px; line-height: 1; filter: grayscale(1); opacity: .6; }
+  .tabs button.on { color: var(--red); }
+  .tabs button.on .i { filter: none; opacity: 1; }
+  body:has(.tabs) main { padding-bottom: 80px; }
+  body:has(.tabs) header { padding: 18px 16px 56px; }
+  body:has(.tabs) footer { display: none; }
+  body:has(.tabs) .toast { bottom: calc(84px + env(safe-area-inset-bottom)); }
+  .badge { position: absolute; top: 2px; left: calc(50% + 8px); min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--red); color: #fff; font-size: 11px; line-height: 18px; }
+  /* Wish lists: a grid of picture cards. */
+  .items { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  @media (min-width: 560px) { .items { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  .item { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+  .pic { aspect-ratio: 1; border-radius: 10px; overflow: hidden; background: #fff; display: grid; place-items: center; font-size: 40px; text-decoration: none; }
   .pic img { width: 100%; height: 100%; object-fit: contain; }
   .info { flex: 1; min-width: 0; }
-  .info .t { font-weight: 600; color: var(--ink); text-decoration: none; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  .info .t { font-size: 14px; line-height: 1.35; font-weight: 600; color: var(--ink); text-decoration: none; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
   a.t:hover { text-decoration: underline; }
-  .info .meta { color: var(--muted); font-size: 13px; margin-top: 2px; }
-  .info .note { font-size: 14px; margin-top: 4px; overflow-wrap: anywhere; }
-  .acts { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
-  .acts button { padding: 6px 10px; font-size: 13px; }
-  @media (min-width: 560px) { .pic { flex-basis: 120px; height: 120px; } }
+  .price { font-weight: 700; font-size: 17px; margin-top: 4px; }
+  .info .note { font-size: 13px; margin-top: 4px; padding: 4px 8px; border-radius: 8px; background: var(--soft); overflow-wrap: anywhere; }
+  .buy, .item .add { display: block; text-align: center; padding: 8px; font: 600 13px Inter, sans-serif; border-radius: 999px; background: #ffd814; color: #111; text-decoration: none; border: 0; }
+  .item .add:disabled { background: var(--soft); color: var(--green); opacity: 1; }
+  .acts { display: flex; gap: 6px; }
+  .acts button { flex: 1; padding: 6px 8px; font-size: 13px; }
+  .acts button:first-child { flex: 0 0 auto; }
+  .search { display: flex; gap: 8px; margin-bottom: 12px; }
+  .search input { flex: 1; min-width: 0; }
+  .search button { padding: 10px 14px; }
+  .more { display: inline-block; margin-top: 12px; color: var(--green); font-weight: 600; }
+  details summary { cursor: pointer; font-weight: 600; color: var(--green); }
+  .count { font: 600 14px Inter, sans-serif; background: var(--soft); border-radius: 999px; padding: 2px 10px; vertical-align: middle; }
+  /* Everyone: pick a person, see their list. */
+  .who { display: flex; gap: 8px; overflow-x: auto; padding: 4px 2px 12px; margin: 0 -2px; scrollbar-width: none; }
+  .who button { flex: 0 0 auto; width: 84px; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 10px 4px; background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: 14px; font-size: 13px; }
+  .who .av { width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; background: var(--soft); color: var(--green); font: 800 20px Fraunces, Georgia, serif; }
+  .who .nm { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .who small { color: var(--muted); font-weight: 400; font-size: 11px; }
+  .who button.on { border-color: var(--red); box-shadow: 0 0 0 1px var(--red); }
+  .who button.on .av { background: var(--red); color: #fff; }
   .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 10px 18px; border-radius: 999px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; }
   .toast.show { opacity: 1; }
   footer { text-align: center; color: var(--muted); font-size: 13px; padding: 0 16px 30px; }
@@ -91,7 +115,7 @@
     header { background-color: #0b2a1f; }
     input, textarea, select { background: #0f1b16; }
     .msg.mine { background: #2d6b4c; }
-    .tabs button.on { background: #2d6b4c; }
+    .tabs button.on { color: #ff6b73; }
     button.ghost { color: var(--green); }
   }
 </style>
